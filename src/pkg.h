@@ -20,6 +20,7 @@ typedef struct {
     char content_id[37];
     char title_id[10];
     uint64_t pkg_size, pfs_offset, pfs_size;
+    uint64_t file_size; /* entries must lie inside the file */
     uint8_t digest[32];
     int nentries;
     pkg_entry_t entries[PKG_MAX_ENTRIES];

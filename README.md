@@ -279,6 +279,7 @@ release with `ps4mount.elf` and its SHA-256 checksum attached.
 | `src/build.c` | Generators for the install files (app/patch metadata, PlayGo records, license) |
 | `src/db.c` | Library rows (`app.db`, `appinfo.db`) |
 | `src/crypto.c` | SHA-256, AES-128-CBC, CRC32C, RSA-2048 |
+| `src/logfile.c` | Keeps `log.txt` under 1 MB |
 | `src/web.c`, `web/index.html` | Web panel |
 | `test/` | Unit tests (`bash test/run.sh`) |
 | `tools/pdb_*_template.bin` | PlayGo record layouts (no title data) |

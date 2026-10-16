@@ -11,6 +11,7 @@
 #include "build.h"
 #include "crypto.h"
 #include "origin.h"
+#include "logfile.h"
 #include "pkg.h"
 #include "pdb_template.h"
 
@@ -244,6 +245,61 @@ static void test_sfo(void) {
     CHECK(!sfo_get(&s, "CATEGORY"));
     d[1] = 'X'; /* not an SFO */
     CHECK(sfo_parse(d, n, &s) != 0);
+
+    /* offsets and lengths of a damaged param.sfo must stay inside the buffer */
+    n = make_sfo(d);
+    d[20 + 12] = 0xf0, d[20 + 13] = 0x0f; /* TITLE value at +0xff0 */
+    CHECK(sfo_parse(d, n, &s) != 0);
+    n = make_sfo(d);
+    d[20 + 4] = 0xff, d[20 + 5] = 0x01; /* TITLE length 511 */
+    CHECK(sfo_parse(d, n, &s) != 0);
+    n = make_sfo(d);
+    d[20 + 16] = 0xf0, d[20 + 17] = 0x0f; /* ATTRIBUTE key at +0xff0 */
+    CHECK(sfo_parse(d, n, &s) != 0);
+    n = make_sfo(d);
+    CHECK(sfo_parse(d, n - 2, &s) != 0); /* ATTRIBUTE int32 cut short */
+}
+
+/* A pkg file with one plain entry (id 0x1000) of the given size at 0x1020. */
+static int make_pkg(char *path, uint32_t entry_size, const char *data) {
+    static uint8_t h[0x1020 + 16];
+    memset(h, 0, sizeof(h));
+    h[0] = 0x7f, h[1] = 'C', h[2] = 'N', h[3] = 'T';
+    h[0x13] = 1;                      /* entry count */
+    h[0x1a] = 0x10;                   /* entry table at 0x1000 */
+    uint8_t *e = h + 0x1000;
+    e[2] = 0x10;                      /* id 0x1000 */
+    e[18] = 0x10, e[19] = 0x20;       /* offset 0x1020 */
+    e[20] = (uint8_t)(entry_size >> 24), e[21] = (uint8_t)(entry_size >> 16);
+    e[22] = (uint8_t)(entry_size >> 8), e[23] = (uint8_t)entry_size;
+    memcpy(h + 0x1020, data, strlen(data));
+    strcpy(path, "/tmp/ps4mount-unit-XXXXXX");
+    int fd = mkstemp(path);
+    if (fd < 0)
+        return -1;
+    int rc = write(fd, h, sizeof(h)) == (ssize_t)sizeof(h) ? 0 : -1;
+    close(fd);
+    return rc;
+}
+
+static void test_pkg_entry(void) {
+    printf("pkg entries\n");
+    char path[64];
+    pkg_t *p = malloc(sizeof(*p));
+    size_t len = 0;
+    CHECK(p && !make_pkg(path, 5, "hello") && !pkg_open(p, path));
+    uint8_t *d = pkg_entry(p, 0x1000, &len);
+    CHECK(d && len == 5 && !memcmp(d, "hello", 5));
+    free(d);
+    pkg_close(p);
+    unlink(path);
+
+    /* a size near 4 GB used to wrap the padded size to 0 and write far out of bounds */
+    CHECK(!make_pkg(path, 0xfffffff8u, "hello") && !pkg_open(p, path));
+    CHECK(!pkg_entry(p, 0x1000, &len));
+    pkg_close(p);
+    unlink(path);
+    free(p);
 }
 
 static void touch(const char *path) {
@@ -307,6 +363,51 @@ static void test_origin(void) {
     CHECK(system(cmd) == 0);
 }
 
+static size_t file_text(const char *path, char *out, size_t cap) {
+    FILE *f = fopen(path, "rb");
+    size_t n = f ? fread(out, 1, cap - 1, f) : 0;
+    out[n] = 0;
+    if (f)
+        fclose(f);
+    return n;
+}
+
+static void test_log_trim(void) {
+    printf("log trim\n");
+    char path[] = "/tmp/ps4mount-log-XXXXXX", text[256];
+    int fd = mkstemp(path);
+    CHECK(fd >= 0);
+    const char log[] = "line one\nline two\nline three\nline four\n";
+    CHECK(write(fd, log, sizeof(log) - 1) == (ssize_t)(sizeof(log) - 1));
+    close(fd);
+
+    CHECK(log_trim(path, 1000, 20) == 0); /* under the limit: untouched */
+    CHECK(file_text(path, text, sizeof(text)) == sizeof(log) - 1);
+
+    /* over the limit: the end is kept, starting at a whole line */
+    CHECK(log_trim(path, 30, 20) == 1);
+    file_text(path, text, sizeof(text));
+    CHECK(!strcmp(text, "line four\n"));
+    unlink(path);
+
+    CHECK(log_trim("/tmp/ps4mount-no-such-log", 30, 20) == 0);
+}
+
+static void test_playgo_bounds(void) {
+    printf("playgo: table offsets that wrap past 4 GB are refused\n");
+    uint8_t pg[0x100] = {0};
+    memcpy(pg, "plgo", 4);
+    pg[0x0a] = 1;
+    pg[0x0e] = 1;
+    /* scenario table (index 4): offset 0xFFFFFF00 + size 0x200 wraps to 0x100 in 32 bits */
+    uint8_t *e = pg + 0xc0 + 4 * 8;
+    e[0] = 0x00, e[1] = 0xff, e[2] = 0xff, e[3] = 0xff;
+    e[4] = 0x00, e[5] = 0x02;
+    buf_t b = {0};
+    CHECK(build_app_xml(&b, pg, sizeof(pg)) == -1);
+    buf_free(&b);
+}
+
 int main(void) {
     test_crypto();
     test_app_json();
@@ -315,6 +416,9 @@ int main(void) {
     test_license();
     test_sfo();
     test_origin();
+    test_pkg_entry();
+    test_log_trim();
+    test_playgo_bounds();
     printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed ? 1 : 0;
 }

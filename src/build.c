@@ -16,11 +16,18 @@
 #define BLK 0x10000ull
 
 void buf_put(buf_t *b, const void *data, size_t len) {
+    if (b->failed)
+        return;
     if (b->len + len + 1 > b->cap) {
         size_t cap = b->cap ? b->cap : 256;
         while (cap < b->len + len + 1)
             cap *= 2;
-        b->data = realloc(b->data, cap);
+        uint8_t *grown = realloc(b->data, cap);
+        if (!grown) {
+            b->failed = 1;
+            return;
+        }
+        b->data = grown;
         b->cap = cap;
     }
     memcpy(b->data + b->len, data, len);
@@ -71,6 +78,10 @@ void build_app_json(buf_t *out, const pkg_t *pkg, const char *url) {
 static void put_bitmap(buf_t *out, uint64_t nbits) {
     size_t nbytes = (size_t)((nbits + 7) / 8);
     uint8_t *bm = malloc(nbytes);
+    if (!bm) {
+        out->failed = 1;
+        return;
+    }
     memset(bm, 0xff, nbytes);
     if (nbits % 8)
         bm[nbytes - 1] = (uint8_t)(0xff << (8 - nbits % 8));
@@ -111,7 +122,7 @@ static int playgo_table(const uint8_t *pg, size_t len, int idx, uint32_t *off, u
         return -1;
     *off = le32(pg + 0xc0 + idx * 8);
     *size = le32(pg + 0xc4 + idx * 8);
-    return *off + *size <= len ? 0 : -1;
+    return (uint64_t)*off + *size <= len ? 0 : -1;
 }
 
 uint16_t playgo_chunk_count(const uint8_t *pg, size_t len) {

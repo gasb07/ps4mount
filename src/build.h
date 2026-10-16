@@ -8,9 +8,12 @@
 
 #include "pkg.h"
 
+/* failed is set when memory ran out: the buffer stops growing and its content is incomplete,
+ * so it must not be written to a file. */
 typedef struct {
     uint8_t *data;
     size_t len, cap;
+    int failed;
 } buf_t;
 
 void buf_put(buf_t *b, const void *data, size_t len);

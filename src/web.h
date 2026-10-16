@@ -5,7 +5,9 @@
 
 #include "build.h"
 
+#ifndef WEB_PORT
 #define WEB_PORT 8770
+#endif
 
 /* Implemented by main.c for the web panel. */
 void app_games_json(buf_t *out);

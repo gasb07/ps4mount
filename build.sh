@@ -19,6 +19,6 @@ mkdir -p build
 [ -f build/sqlite3.o ] || $B/prospero-clang -O2 -w -c third_party/sqlite/sqlite3.c -o build/sqlite3.o \
     -DSQLITE_THREADSAFE=0 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_DEFAULT_MEMSTATUS=0
 $B/prospero-clang -O2 -Wall -Wextra -Ibuild -Ithird_party/sqlite -o build/ps4mount.elf \
-    src/main.c src/fw.c src/logts.c src/web.c src/pkg.c src/build.c src/db.c src/origin.c src/crypto.c build/sqlite3.o \
+    src/main.c src/fw.c src/logts.c src/web.c src/pkg.c src/build.c src/db.c src/origin.c src/crypto.c src/logfile.c build/sqlite3.o \
     -lSceUserService -lSceAppInstUtil -lSceSystemService -lkernel_sys
 ls -la build/ps4mount.elf
