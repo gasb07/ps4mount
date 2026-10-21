@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "crypto.h"
@@ -65,8 +66,11 @@ int pkg_open(pkg_t *pkg, const char *path) {
     pkg->fd = open(path, O_RDONLY);
     if (pkg->fd < 0)
         return -1;
-    if (read_at(pkg->fd, pkg->header, sizeof(pkg->header), 0) || be32(pkg->header) != 0x7f434e54)
+    struct stat st;
+    if (fstat(pkg->fd, &st) || read_at(pkg->fd, pkg->header, sizeof(pkg->header), 0) ||
+        be32(pkg->header) != 0x7f434e54)
         goto fail;
+    pkg->file_size = (uint64_t)st.st_size;
     memcpy(pkg->content_id, pkg->header + 0x40, 36);
     memcpy(pkg->title_id, pkg->content_id + 7, 9);
     pkg->pfs_offset = be64(pkg->header + 0x410);
@@ -115,6 +119,8 @@ uint8_t *pkg_entry(pkg_t *pkg, uint32_t id, size_t *len) {
         if (e->size > PKG_MAX_ENTRY_SIZE)
             return NULL;
         size_t padded = ((size_t)e->size + 15u) & ~(size_t)15u;
+        if ((uint64_t)e->offset + padded > pkg->file_size)
+            return NULL;
         uint8_t *buf = malloc(padded + 1);
         if (!buf || read_at(pkg->fd, buf, padded, e->offset)) {
             free(buf);
@@ -147,9 +153,10 @@ int sfo_parse(const uint8_t *d, size_t len, sfo_t *out) {
         return -1;
     uint32_t ko = le32(d + 8), dof = le32(d + 12), n = le32(d + 16);
     for (uint32_t i = 0; i < n && out->count < 128; i++) {
-        const uint8_t *ent = d + 20 + i * 16;
-        if ((size_t)(ent - d) + 16 > len)
+        size_t eo = 20 + (size_t)i * 16;
+        if (eo + 16 > len)
             return -1;
+        const uint8_t *ent = d + eo;
         uint16_t kof = le16(ent), fmt = le16(ent + 2);
         uint32_t ln = le32(ent + 4), vof = le32(ent + 12);
         /* offsets and lengths come from the file: everything must lie inside it */

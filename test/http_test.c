@@ -115,6 +115,7 @@ int main(void) {
     CHECK(!strcmp(g_stub_call, "remove") && !strcmp(g_stub_arg, "CUSA04263"));
     const char *bad[] = {"/api/mount?title_id=CUSA0079", "/api/mount?title_id=../../../", "/api/mount?title_id=PPSA00001",
                          "/api/mount?title_id=cusa00791", "/api/mount?title_id=", "/api/mount", "/api/unmount?title_id=CUSA%2F%2E%2E",
+                         "/api/mount?title_id=CUSA0079X", "/api/mount?title_id=CUSAABCDE", "/api/mount?title_id=CUSA007910",
                          NULL};
     for (int i = 0; bad[i]; i++) {
         int before = g_stub_calls;

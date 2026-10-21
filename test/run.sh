@@ -30,7 +30,7 @@ SQ="$B/sqlite3-$(echo "$CC $FLAGS" | md5sum | cut -c1-8).o"
     -DSQLITE_THREADSAFE=0 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_DEFAULT_MEMSTATUS=0
 
 echo "== unit"
-$CC $FLAGS -o "$B/unit" test/unit.c src/build.c src/crypto.c src/pkg.c src/origin.c
+$CC $FLAGS -o "$B/unit" test/unit.c src/build.c src/crypto.c src/pkg.c src/origin.c src/logfile.c
 "$B/unit"
 
 echo "== firmware simulation"
@@ -44,6 +44,10 @@ $CC $FLAGS -Ithird_party/sqlite -DAPP_DB="\"$B/app.db\"" -o "$B/db_test" test/db
 echo "== web panel server"
 $CC $FLAGS -Itest -o "$B/http_test" test/http_test.c test/stubs.c src/web.c src/build.c src/crypto.c -lpthread
 "$B/http_test"
+
+echo "== web panel from the main loop"
+$CC $FLAGS -DWEB_PORT=18770 -o "$B/web_unit" test/web_unit.c src/web.c src/build.c src/crypto.c src/pkg.c
+"$B/web_unit"
 
 echo "== log with times"
 $CC $FLAGS -o "$B/log_test" test/log_test.c src/logts.c -lpthread

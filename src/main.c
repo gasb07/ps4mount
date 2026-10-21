@@ -39,6 +39,7 @@
 #include "crypto.h"
 #include "db.h"
 #include "fw.h"
+#include "logfile.h"
 #include "logts.h"
 #include "origin.h"
 #include "pkg.h"
@@ -194,7 +195,13 @@ static int write_entry(pkg_t *pkg, uint32_t id, const char *path) {
     return rc;
 }
 
-static int write_buf(const char *path, const buf_t *b) { return write_file(path, b->data, b->len, 0777); }
+static int write_buf(const char *path, const buf_t *b) {
+    if (b->failed) {
+        printf("[write] %s: out of memory while building it, not written\n", path);
+        return -1;
+    }
+    return write_file(path, b->data, b->len, 0777);
+}
 
 /* --- registration --- */
 
@@ -1580,7 +1587,11 @@ static int adopt_dir_pkgs(const char *root, const char *dir) {
             char old[PATH_MAX];
             snprintf(old, sizeof(old), "%s/ps4/%s/replaced", root, tid);
             mkdirs(old, 0777);
-            snprintf(old, sizeof(old), "%s/ps4/%s/replaced/patch-%ld.pkg", root, tid, (long)time(NULL));
+            long now = (long)time(NULL);
+            struct stat taken;
+            snprintf(old, sizeof(old), "%s/ps4/%s/replaced/patch-%ld.pkg", root, tid, now);
+            for (int k = 2; !stat(old, &taken) && k < 100; k++) /* rename() would replace it */
+                snprintf(old, sizeof(old), "%s/ps4/%s/replaced/patch-%ld-%d.pkg", root, tid, now, k);
             if (rename(dst, old)) {
                 printf("[scan] keep %s aside: %s\n", dst, strerror(errno));
                 continue;
@@ -2793,7 +2804,10 @@ static void config_save(void) {
                g_cfg.restore_batch);
     for (int i = 0; i < g_cfg.npaths; i++)
         buf_printf(&b, "path=%s\n", g_cfg.paths[i]);
-    write_file(CONFIG_PATH, b.data, b.len, 0666);
+    if (b.failed)
+        printf("[config] out of memory: settings not saved\n");
+    else
+        write_file(CONFIG_PATH, b.data, b.len, 0666);
     buf_free(&b);
 }
 
@@ -3069,6 +3083,24 @@ static void pump_events(int ms) {
     }
 }
 
+#define LOG_FILE STATE_DIR "/log.txt"
+#define LOG_MAX (1 << 20)   /* log.txt is cut back to its last LOG_KEEP bytes past this size */
+#define LOG_KEEP (256 << 10)
+
+/* Keeps log.txt bounded. */
+static void log_limit(void) {
+    /* The install thread prints to stdout; restarting the logger while it writes is undefined. */
+    if (g_install_busy)
+        return;
+    if (log_trim(LOG_FILE, LOG_MAX, LOG_KEEP) != 1)
+        return;
+    /* log_trim renamed a new file over the log, so the timestamping logger still holds the
+     * old one: start it again on the trimmed file */
+    log_stop();
+    log_start(LOG_FILE);
+    printf("[main] log trimmed to its last %d KB\n", LOG_KEEP >> 10);
+}
+
 int main(void) {
     int lock = single_instance();
     if (lock < 0) {
@@ -3080,7 +3112,8 @@ int main(void) {
     mkdirs(STATE_DIR, 0777);
     /* the log goes to a file, every line with its time; when it cannot be opened, stdout
      * stays as it was */
-    if (!log_start(STATE_DIR "/log.txt"))
+    log_trim(LOG_FILE, LOG_MAX, LOG_KEEP);
+    if (!log_start(LOG_FILE))
         atexit(log_stop); /* the last lines reach the file before the payload exits */
     setvbuf(stdout, NULL, _IOLBF, 0);
     config_load();
@@ -3148,6 +3181,7 @@ int main(void) {
             else if (g_manual_scan)
                 notify("Firmware %s is not supported yet: no games are added", g_fw_text);
             g_manual_scan = 0;
+            log_limit();
             g_next_scan = time(NULL) + SCAN_SECONDS;
         }
         pump_events(1000);

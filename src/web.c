@@ -11,6 +11,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "page_data.h"
@@ -32,9 +33,14 @@ int web_listen(void) {
     return s;
 }
 
+/* The panel is served from the daemon's main loop: a client that stops reading
+ * (each write may block SO_SNDTIMEO) is dropped after SEND_LIMIT seconds. */
+#define SEND_LIMIT 10
+
 static void send_all(int fd, const void *p, size_t n) {
     const char *c = p;
-    while (n) {
+    time_t start = time(NULL);
+    while (n && time(NULL) - start < SEND_LIMIT) {
         ssize_t w = write(fd, c, n);
         if (w <= 0)
             return;
@@ -67,16 +73,19 @@ static void json_msg(int fd, int ok, const char *msg) {
     buf_free(&b);
 }
 
-/* A title id (CUSA00000) at p, copied to tid. 0 when valid. */
+/* A title id (CUSA and 5 digits) at p, ending there or at the next query parameter, copied
+ * to tid. 0 when valid. */
 static int title_at(const char *p, char *tid) {
-    for (int i = 0; i < 9; i++) {
-        char c = p[i];
-        if (!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')))
+    if (strncmp(p, "CUSA", 4))
+        return -1;
+    for (int i = 4; i < 9; i++)
+        if (p[i] < '0' || p[i] > '9')
             return -1;
-        tid[i] = c;
-    }
+    if (p[9] && p[9] != '&')
+        return -1;
+    memcpy(tid, p, 9);
     tid[9] = 0;
-    return strncmp(tid, "CUSA", 4) ? -1 : 0;
+    return 0;
 }
 
 static int title_param(const char *path, char *tid) {
@@ -120,8 +129,9 @@ void web_serve(int listen_fd) {
 }
 
 void web_handle(int fd) {
-    struct timeval tv = {5, 0};
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    struct timeval rtv = {2, 0}, stv = {3, 0};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &rtv, sizeof(rtv));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &stv, sizeof(stv));
     char req[8192];
     ssize_t n = read(fd, req, sizeof(req) - 1);
     if (n <= 0) {
