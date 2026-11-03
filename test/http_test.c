@@ -173,6 +173,17 @@ int main(void) {
           !strcmp(g_stub_arg, "CUSA00791 EP0001-CUSA00791_00-AAAAAAAAAAAAAAAA,EP0001-CUSA00791_00-BBBBBBBBBBBBBBBB"));
     r = post("/api/dlc?title_id=CUSA00791", "on=");
     CHECK(status(r, "200") && !strcmp(g_stub_arg, "CUSA00791 ")); /* all off */
+    {
+        /* a game with hundreds of add-ons: the list is far longer than one read */
+        static char body[900 * 39 + 8], req[sizeof(body) + 256];
+        size_t o = (size_t)snprintf(body, sizeof(body), "on=");
+        for (int i = 0; i < 900; i++)
+            o += (size_t)snprintf(body + o, sizeof(body) - o, "%sEP0001-CUSA00791_00-A%015d", i ? "%2C" : "", i);
+        int len = snprintf(req, sizeof(req), "POST /api/dlc?title_id=CUSA00791 HTTP/1.1\r\nContent-Length: %zu\r\n\r\n%s",
+                           o, body);
+        r = ask2(req, (size_t)len, NULL);
+        CHECK(status(r, "200") && !strcmp(g_stub_call, "dlc") && g_stub_dlc_len == 900 * 37 - 1);
+    }
     r = post("/api/launch?title_id=CUSA00791", "");
     CHECK(status(r, "200") && !strcmp(g_stub_call, "launch") && !strcmp(g_stub_arg, "CUSA00791 0"));
     r = post("/api/launch?title_id=CUSA00002", "");

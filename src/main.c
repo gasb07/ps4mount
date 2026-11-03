@@ -59,7 +59,6 @@
  * console only ever removes these links, never the pkgs. */
 #define HOLD_DIR "/system_data/ps4mount"
 #define MAX_TITLES 768
-#define MAX_DLC 64
 #define DLC_LIMIT 29 /* add-ons a running game can use (see the README) */
 #define BATCH_QUIET 10 /* seconds without writes to the system databases between groups */
 #define MAX_DLC_TIDS 8
@@ -225,10 +224,18 @@ static int write_buf(const char *path, const buf_t *b) { return write_file(path,
 /* --- registration --- */
 
 /* An add-on: <root>/ps4/<TID>/addcont/<ADD-ON TID>/<LABEL>/ac.pkg. */
+/* What the scan keeps of an add-on pkg. Games can have hundreds of add-ons, so the pkg
+ * itself is opened only when it is used. */
+typedef struct {
+    char content_id[37], title_id[10];
+    uint64_t pkg_size;
+    uint8_t digest[32];
+} dlc_pkg_t;
+
 typedef struct {
     char path[PATH_MAX];
-    pkg_t pkg;
-    sfo_t sfo;
+    dlc_pkg_t pkg;
+    char name[128], ver[8]; /* param.sfo TITLE and VERSION */
     int data; /* 1: has data (mounted by the game), 0: only unlocks content */
 } dlc_src_t;
 
@@ -238,12 +245,14 @@ static char *dlc_off_read(const char *tid) {
     char path[64];
     snprintf(path, sizeof(path), STATE_DIR "/%s.dlcoff", tid);
     int fd = open(path, O_RDONLY);
+    struct stat st;
     if (fd < 0)
         return NULL;
-    char *s = calloc(1, MAX_DLC * 40 + 2);
+    size_t cap = fstat(fd, &st) ? 0 : (size_t)st.st_size;
+    char *s = calloc(1, cap + 3);
     if (s) {
         s[0] = '\n';
-        ssize_t n = read(fd, s + 1, MAX_DLC * 40);
+        ssize_t n = read(fd, s + 1, cap);
         if (n < 0)
             n = 0;
         if (n && s[n] != '\n')
@@ -285,8 +294,6 @@ static void src_close(title_src_t *t) {
     pkg_close(&t->app);
     if (t->has_patch)
         pkg_close(&t->patch);
-    for (int i = 0; i < t->ndlc_all; i++)
-        pkg_close(&t->dlc[i].pkg);
     free(t->dlc);
     t->dlc = NULL;
     t->ndlc = t->ndlc_all = 0;
@@ -303,6 +310,15 @@ static void dlc_open(title_src_t *t) {
     DIR *d = opendir(base);
     if (!d)
         return;
+    pkg_t *pkg = malloc(sizeof(*pkg));
+    sfo_t *sfo = malloc(sizeof(*sfo));
+    int cap = 0;
+    if (!pkg || !sfo) {
+        free(pkg);
+        free(sfo);
+        closedir(d);
+        return;
+    }
     struct dirent *e;
     while ((e = readdir(d))) {
         if (strlen(e->d_name) != 9 || strncmp(e->d_name, "CUSA", 4))
@@ -316,39 +332,51 @@ static void dlc_open(title_src_t *t) {
         while ((f = readdir(l))) {
             if (f->d_name[0] == '.' || strlen(f->d_name) != 16)
                 continue;
-            if (!t->dlc && !(t->dlc = calloc(MAX_DLC, sizeof(*t->dlc))))
-                break;
-            if (t->ndlc == MAX_DLC)
-                break;
+            if (t->ndlc == cap) {
+                dlc_src_t *more = realloc(t->dlc, sizeof(*more) * (size_t)(cap ? cap * 2 : 16));
+                if (!more)
+                    break;
+                t->dlc = more;
+                cap = cap ? cap * 2 : 16;
+            }
             dlc_src_t *a = &t->dlc[t->ndlc];
+            memset(a, 0, sizeof(*a));
             snprintf(a->path, sizeof(a->path), "%s/%s/ac.pkg", sub, f->d_name);
             if (!exists(a->path))
                 continue;
-            if (pkg_open(&a->pkg, a->path) || read_sfo(&a->pkg, &a->sfo)) {
-                if (a->pkg.fd > 0)
-                    pkg_close(&a->pkg);
+            if (pkg_open(pkg, a->path))
                 continue;
-            }
-            const sfo_item_t *cat = sfo_get(&a->sfo, "CATEGORY");
+            int ok = !read_sfo(pkg, sfo);
+            const sfo_item_t *cat = ok ? sfo_get(sfo, "CATEGORY") : NULL;
             /* the fake key was checked when the pkg was moved here; checking it again on
              * every scan would cost an RSA operation per add-on */
-            if (!cat || strcmp(cat->sval, "ac") || strcmp(a->pkg.title_id, e->d_name) ||
-                strcmp(a->pkg.content_id + 20, f->d_name)) {
-                pkg_close(&a->pkg);
-                continue;
+            ok = cat && !strcmp(cat->sval, "ac") && !strcmp(pkg->title_id, e->d_name) &&
+                 !strcmp(pkg->content_id + 20, f->d_name);
+            if (ok) {
+                snprintf(a->pkg.content_id, sizeof(a->pkg.content_id), "%s", pkg->content_id);
+                snprintf(a->pkg.title_id, sizeof(a->pkg.title_id), "%s", pkg->title_id);
+                a->pkg.pkg_size = pkg->pkg_size;
+                memcpy(a->pkg.digest, pkg->digest, sizeof(a->pkg.digest));
+                a->data = pkg->header[0x77] == 0x1b; /* content type: 0x1b with data, 0x1c license only */
+                const sfo_item_t *it = sfo_get(sfo, "TITLE");
+                snprintf(a->name, sizeof(a->name), "%s", it && !it->is_int ? it->sval : "");
+                it = sfo_get(sfo, "VERSION");
+                snprintf(a->ver, sizeof(a->ver), "%s", it && !it->is_int ? it->sval : "01.00");
             }
+            pkg_close(pkg);
+            if (!ok)
+                continue;
             char rm[96];
             snprintf(rm, sizeof(rm), STATE_DIR "/%s.removed", a->pkg.content_id);
-            if (exists(rm)) { /* deleted on the console */
-                pkg_close(&a->pkg);
+            if (exists(rm)) /* deleted on the console */
                 continue;
-            }
-            a->data = a->pkg.header[0x77] == 0x1b; /* content type: 0x1b with data, 0x1c license only */
             t->ndlc++;
         }
         closedir(l);
     }
     closedir(d);
+    free(pkg);
+    free(sfo);
     if (!t->ndlc)
         return;
     qsort(t->dlc, (size_t)t->ndlc, sizeof(*t->dlc), dlc_cmp);
@@ -587,10 +615,14 @@ static int place_license(pkg_t *pkg) {
  * title ID) over /user/addcont/<ADD-ON TID>. It holds ac.pkg as a symlink to the pkg on
  * the drive plus ac.json/ac.pbm. Also writes the PlayGo records, the license slot and,
  * for add-ons with data, the icon. */
-static int place_dlc(dlc_src_t *a) {
-    pkg_t *pkg = &a->pkg;
-    const sfo_item_t *v = sfo_get(&a->sfo, "VERSION");
-    const char *ver = v && !v->is_int ? v->sval : "01.00", *label = pkg->content_id + 20;
+static int place_dlc(const dlc_src_t *a) {
+    pkg_t *pkg = malloc(sizeof(*pkg));
+    if (!pkg || pkg_open(pkg, a->path)) {
+        free(pkg);
+        printf("[reg] add-on %s: pkg unreadable\n", a->pkg.content_id);
+        return -1;
+    }
+    const char *ver = a->ver, *label = pkg->content_id + 20;
     char dir[PATH_MAX], p[PATH_MAX], q[PATH_MAX];
     snprintf(dir, sizeof(dir), HOLD_DIR "/addcont/%s/%s", pkg->title_id, label);
     mkdirs(dir, 0777);
@@ -631,11 +663,13 @@ static int place_dlc(dlc_src_t *a) {
     buf_free(&pdb);
     if (rc)
         printf("[reg] add-on %s: could not write its files\n", pkg->content_id);
+    pkg_close(pkg);
+    free(pkg);
     return rc ? -1 : 0;
 }
 
 /* An add-on turned off: its internal folder and records go, so the game no longer sees it. */
-static void drop_dlc(const pkg_t *pkg) {
+static void drop_dlc(const dlc_pkg_t *pkg) {
     char p[PATH_MAX];
     snprintf(p, sizeof(p), HOLD_DIR "/addcont/%s/%s", pkg->title_id, pkg->content_id + 20);
     if (!exists(p))
@@ -691,7 +725,7 @@ int sceAppInstUtilAppUnInstallAddcont(const char *title_id, const char *addcont_
  * system together after a scan, which copies them one by one in that order. The calls run in their own
  * thread; the main loop follows each copy in ac_poll (klog copy lines, then the file size). */
 #define AC_RETURN_S 60 /* a call still running this long after the copy reached full size is not waited for */
-#define AC_MAX_JOBS MAX_DLC
+#define AC_MAX_JOBS 64 /* add-ons per copy batch: the rest go in the next one */
 
 typedef struct {
     int data, started, ended, copy_start, copy_end; /* copy_*: klog lines seen */
@@ -779,8 +813,7 @@ static int ac_queue(const dlc_src_t *a, const char *game_tid, char *why, size_t 
     snprintf(j->cid, sizeof(j->cid), "%s", a->pkg.content_id);
     snprintf(j->game, sizeof(j->game), "%s", game_tid);
     snprintf(j->pkg_path, sizeof(j->pkg_path), "%s", a->path);
-    const sfo_item_t *it = sfo_get(&a->sfo, "TITLE");
-    snprintf(j->name, sizeof(j->name), "%s", it && !it->is_int ? it->sval : a->pkg.content_id);
+    snprintf(j->name, sizeof(j->name), "%s", a->name[0] ? a->name : a->pkg.content_id);
     j->size = a->pkg.pkg_size;
     char pend[96];
     ac_pend_path(pend, sizeof(pend), j->cid);
@@ -3066,9 +3099,8 @@ int app_game_json(const char *tid, buf_t *out, char *msg, size_t cap) {
     }
     buf_printf(out, "],\"dlcs\":[");
     for (int i = 0; i < t.ndlc_all; i++) {
-        const sfo_item_t *n = sfo_get(&t.dlc[i].sfo, "TITLE");
         buf_printf(out, "%s{\"content_id\":\"%s\",\"name\":", i ? "," : "", t.dlc[i].pkg.content_id);
-        json_str(out, n && !n->is_int ? n->sval : t.dlc[i].pkg.content_id + 20);
+        json_str(out, t.dlc[i].name[0] ? t.dlc[i].name : t.dlc[i].pkg.content_id + 20);
         buf_printf(out, ",\"on\":%s,\"data\":%s", i < t.ndlc ? "true" : "false", t.dlc[i].data ? "true" : "false");
         char why[128] = "";
         buf_printf(out, ",\"copy\":\"%s\",\"reason\":", ac_status(&t.dlc[i], i < t.ndlc, why, sizeof(why)));
