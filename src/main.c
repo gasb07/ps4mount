@@ -58,7 +58,7 @@
  * /user is bfs, which has no symlinks; /system_data is ufs. A delete from the
  * console only ever removes these links, never the pkgs. */
 #define HOLD_DIR "/system_data/ps4mount"
-#define MAX_TITLES 256
+#define MAX_TITLES 768
 #define MAX_DLC 64
 #define DLC_LIMIT 29 /* add-ons a running game can use (see the README) */
 #define BATCH_QUIET 10 /* seconds without writes to the system databases between groups */
@@ -2472,15 +2472,20 @@ static void scan_root(const char *root, int fresh, int reconnected) {
         return;
     }
     static title_t titles[MAX_TITLES];
-    int count = 0, pending = 0;
+    static int over_told; /* games past the limit in the last notification */
+    int count = 0, pending = 0, over = 0;
     struct dirent *e;
-    while ((e = readdir(d)) && count < MAX_TITLES) {
+    while ((e = readdir(d))) {
         if (strlen(e->d_name) != 9 || strncmp(e->d_name, "CUSA", 4))
             continue;
         char pkg_path[PATH_MAX];
         snprintf(pkg_path, sizeof(pkg_path), "%s/%s/app.pkg", lib, e->d_name);
         if (!exists(pkg_path))
             continue;
+        if (count == MAX_TITLES) {
+            over++;
+            continue;
+        }
         title_src_t src;
         if (src_open(&src, root, e->d_name))
             continue;
@@ -2501,6 +2506,11 @@ static void scan_root(const char *root, int fresh, int reconnected) {
         src_close(&src);
     }
     closedir(d);
+    if (over && (fresh || over > over_told)) {
+        printf("[scan] %s: %d game(s) past the limit of %d not added\n", root, over, MAX_TITLES);
+        notify("%s: %d game(s) not added: PS4Mount handles up to %d games per drive", label, over, MAX_TITLES);
+    }
+    over_told = over;
     if (fresh && !count)
         notify("%s: no PS4 games found", label);
     else if (fresh)
