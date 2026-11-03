@@ -11,7 +11,7 @@ const GAMES = [
   { title_id: 'CUSA00190', name: 'Killzone', version: '01.00', has_patch: false, size: 9e9, state: 'internal', mount: '', source: '/mnt/usb0/ps4/CUSA00190', dlc: 0, update_issue: '' },
   { title_id: 'CUSA41712', name: 'Soulstice', version: '01.03', has_patch: false, size: 9e9, state: 'ready', mount: 'rw', source: '/mnt/usb0/ps4/CUSA41712', dlc: 1, dlc_total: 3, updates: 0, update_issue: '' }];
 const CFG = { batch: true, batch_size: 5, dlc: true, dlc_copy: true, restore_batch: 5, max_restore_batch: 10, paths: ['/'] };
-const DETAIL = { title_id: 'CUSA41712', name: 'Soulstice', dlc_limit: 2,
+const DETAIL = { title_id: 'CUSA41712', name: 'Soulstice', dlc_limit: 1,
   updates: [{ file: 'patch.pkg', version: '01.03', name: 'b.pkg', active: true }, { file: 'replaced/patch-1.pkg', version: '01.02', name: 'a.pkg', active: false }],
   dlcs: [{ content_id: 'EP0001-CUSA41712_00-AAAAAAAAAAAAAAAA', name: 'Pack A', on: true, data: true, copy: 'installed', reason: '' },
          { content_id: 'EP0001-CUSA41712_00-BBBBBBBBBBBBBBBB', name: 'Pack B', on: false, data: false, copy: 'problem', reason: 'copy stopped' },
@@ -181,11 +181,15 @@ function parses(code, version) {
   const dr = d.querySelectorAll('#d-rows tr');
   ok(dr[0].textContent.includes('Installed') && dr[1].textContent.includes('Problem: copy stopped'), 'add-ons dialog shows the copy status');
   ok(dr[2].textContent.includes('Not installed'), 'add-ons dialog shows an add-on not installed');
-  db[2].checked = true; d.getElementById('d-rows').dispatchEvent(new w.Event('change', { bubbles: true }));
-  ok(db[1].disabled && d.getElementById('d-info').textContent.includes('limit reached'), 'past the limit the others cannot be turned on');
+  ok(db[2].disabled && !db[1].disabled && d.getElementById('d-info').textContent.includes('limit reached'), 'past the limit no other add-on with content can be turned on, unlock-only ones can');
+  db[1].checked = true; d.getElementById('d-rows').dispatchEvent(new w.Event('change', { bubbles: true }));
+  ok(db[2].disabled && d.getElementById('d-info').textContent.includes('2 of 3 on, 1 of 1 with content'), 'unlock-only add-ons do not count for the limit');
   reqs.length = 0; d.getElementById('d-go').click(); await tick();
   ok(reqs[0].url === '/api/dlc?title_id=CUSA41712' &&
-     reqs[0].body === 'on=' + encodeURIComponent('EP0001-CUSA41712_00-AAAAAAAAAAAAAAAA,EP0001-CUSA41712_00-CCCCCCCCCCCCCCCC'), 'add-on choice sent');
+     reqs[0].body === 'on=' + encodeURIComponent('EP0001-CUSA41712_00-AAAAAAAAAAAAAAAA,EP0001-CUSA41712_00-BBBBBBBBBBBBBBBB'), 'add-on choice sent');
+  db[0].checked = false; db[1].checked = false; d.getElementById('d-all').checked = true;
+  d.getElementById('d-all').dispatchEvent(new w.Event('change'));
+  ok(db[0].checked && db[1].checked && !db[2].checked, 'select all: every unlock-only add-on, add-ons with content up to the limit');
 
   // --- legacy page
   p = page('legacy.html', {}); ({ w, d, reqs } = p);
@@ -273,9 +277,13 @@ function parses(code, version) {
   const ldr = d.querySelectorAll('#d-rows tr');
   ok(ldr[0].textContent.includes('Installed') && ldr[1].textContent.includes('Problem: copy stopped'), 'legacy add-ons page shows the copy status');
   ok(ldr[2].textContent.includes('Not installed'), 'legacy add-ons page shows an add-on not installed');
-  ldb[2].click();
-  ok(ldb[1].disabled && d.getElementById('d-info').textContent.includes('limit reached'), 'legacy: past the limit the others cannot be turned on');
+  ok(ldb[2].disabled && !ldb[1].disabled && d.getElementById('d-info').textContent.includes('limit reached'), 'legacy: past the limit no other add-on with content can be turned on, unlock-only ones can');
+  ldb[1].click();
+  ok(ldb[2].disabled && d.getElementById('d-info').textContent.includes('2 of 3 on, 1 of 1 with content'), 'legacy: unlock-only add-ons do not count for the limit');
   reqs.length = 0; d.getElementById('d-go').click(); await tick();
   ok(reqs[0].url === '/api/dlc?title_id=CUSA41712' &&
-     reqs[0].body === 'on=' + encodeURIComponent('EP0001-CUSA41712_00-AAAAAAAAAAAAAAAA,EP0001-CUSA41712_00-CCCCCCCCCCCCCCCC'), 'legacy add-on choice sent');
+     reqs[0].body === 'on=' + encodeURIComponent('EP0001-CUSA41712_00-AAAAAAAAAAAAAAAA,EP0001-CUSA41712_00-BBBBBBBBBBBBBBBB'), 'legacy add-on choice sent');
+  ldb[0].checked = false; ldb[1].checked = false; d.getElementById('d-all').checked = true;
+  d.getElementById('d-all').onclick.call(d.getElementById('d-all'));
+  ok(ldb[0].checked && ldb[1].checked && !ldb[2].checked, 'legacy select all: every unlock-only add-on, add-ons with content up to the limit');
 })();

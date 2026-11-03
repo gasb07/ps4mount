@@ -116,7 +116,7 @@ pre{white-space:pre-wrap;font-size:12px;background:#0b0d11;padding:12px;border-r
 
 <div class="view" id="v-dlc">
   <h2>Add-ons of <span id="d-name"></span></h2>
-  <p class="note">A game can use at most <span id="d-limit">29</span> add-ons. Changing them adds the game again.</p>
+  <p class="note">A game can use at most <span id="d-limit">29</span> add-ons with content; unlock-only add-ons do not count. Changing them adds the game again.</p>
   <table>
     <thead><tr><th class="c"><input type="checkbox" id="d-all"></th><th>Add-on</th><th>Type</th></tr></thead>
     <tbody id="d-rows"></tbody>
@@ -447,12 +447,18 @@ $('u-go').onclick = function () {
   });
 };
 function dlcBoxes() { return $('d-rows').getElementsByTagName('input'); }
+/* Only add-ons with content count for the limit: unlock-only ones are never mounted. */
+function hasData(box) { return box.getAttribute('data-d') === '1'; }
 function dlcUpdate() {
-  var b = dlcBoxes(), n = 0, limit = cur.dlc_limit, i;
-  for (i = 0; i < b.length; i++) n += b[i].checked ? 1 : 0;
-  for (i = 0; i < b.length; i++) b[i].disabled = !b[i].checked && n >= limit;
-  $('d-all').checked = n > 0 && n === Math.min(b.length, limit);
-  $('d-info').innerHTML = n + ' of ' + b.length + ' on' + (n >= limit ? ' (limit reached)' : '');
+  var b = dlcBoxes(), n = 0, nd = 0, data = 0, limit = cur.dlc_limit, i;
+  for (i = 0; i < b.length; i++) {
+    n += b[i].checked ? 1 : 0;
+    nd += b[i].checked && hasData(b[i]) ? 1 : 0;
+    data += hasData(b[i]) ? 1 : 0;
+  }
+  for (i = 0; i < b.length; i++) b[i].disabled = hasData(b[i]) && !b[i].checked && nd >= limit;
+  $('d-all').checked = n > 0 && n === b.length - data + Math.min(data, limit);
+  $('d-info').innerHTML = n + ' of ' + b.length + ' on, ' + nd + ' of ' + limit + ' with content' + (nd >= limit ? ' (limit reached)' : '');
 }
 function openDlcs(tid) {
   api('/api/game?title_id=' + tid, 'GET', null, function (err, g) {
@@ -463,7 +469,7 @@ function openDlcs(tid) {
     var rows = '', d;
     for (var i = 0; i < g.dlcs.length; i++) {
       d = g.dlcs[i];
-      rows += '<tr><td class="c"><input type="checkbox" value="' + esc(d.content_id) + '"' + (d.on ? ' checked' : '') + '></td>' +
+      rows += '<tr><td class="c"><input type="checkbox" value="' + esc(d.content_id) + '"' + (d.data ? ' data-d="1"' : '') + (d.on ? ' checked' : '') + '></td>' +
         '<td>' + esc(d.name) + '<div class="meta">' + esc(d.content_id) + '</div></td>' +
         '<td>' + (d.data ? 'Content' : 'Unlock') + copyText(d) + '</td></tr>';
     }
@@ -475,8 +481,11 @@ function openDlcs(tid) {
   });
 }
 $('d-all').onclick = function () {
-  var b = dlcBoxes(), on = this.checked;
-  for (var i = 0; i < b.length; i++) b[i].checked = on && i < cur.dlc_limit;
+  var b = dlcBoxes(), on = this.checked, nd = 0;
+  for (var i = 0; i < b.length; i++) {
+    b[i].checked = on && (!hasData(b[i]) || nd < cur.dlc_limit);
+    nd += b[i].checked && hasData(b[i]) ? 1 : 0;
+  }
   dlcUpdate();
 };
 $('d-cancel').onclick = function () { show('v-games'); };

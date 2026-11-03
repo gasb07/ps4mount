@@ -303,7 +303,8 @@ static int dlc_cmp(const void *a, const void *b) {
     return strcmp(((const dlc_src_t *)a)->pkg.content_id, ((const dlc_src_t *)b)->pkg.content_id);
 }
 
-/* Add-ons are used when their folder names match the pkg (title ID and label). */
+/* Add-ons are used when their folder names match the pkg (title ID and label). Without a
+ * <TID>.dlcoff file, every unlock-only add-on is on, and add-ons with data up to DLC_LIMIT. */
 static void dlc_open(title_src_t *t) {
     char base[PATH_MAX];
     snprintf(base, sizeof(base), "%s/addcont", t->dir);
@@ -390,8 +391,9 @@ static void dlc_open(title_src_t *t) {
     }
     int on = 0, k = 0;
     for (int pass = 0; pass < 2; pass++)
-        for (int i = 0; i < t->ndlc; i++) {
-            int is_off = off ? dlc_listed(off, t->dlc[i].pkg.content_id) : i >= DLC_LIMIT;
+        for (int i = 0, data = 0; i < t->ndlc; i++) {
+            int is_off = off ? dlc_listed(off, t->dlc[i].pkg.content_id) : t->dlc[i].data && data >= DLC_LIMIT;
+            data += t->dlc[i].data;
             if (is_off == pass)
                 sorted[k++] = t->dlc[i];
             on += !pass && !is_off;
@@ -3149,24 +3151,36 @@ int app_choose_update(const char *tid, const char *rel, char *msg, size_t cap) {
 /* on: content IDs of the add-ons to keep on, comma separated (empty: all off). */
 int app_choose_dlc(const char *tid, const char *on, char *msg, size_t cap) {
     char root[32];
-    int n = 0;
     for (const char *p = on; *p;) {
         size_t len = strcspn(p, ",");
         if (len != 36 || strspn(p, "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_") < 36) {
             snprintf(msg, cap, "invalid add-on: %.40s", p);
             return -1;
         }
-        n++;
         p += len;
         if (*p == ',')
             p++;
     }
-    if (n > DLC_LIMIT) {
-        snprintf(msg, cap, "At most %d add-ons can be on", DLC_LIMIT);
+    /* only add-ons with data use the devices a running game mounts its packages with */
+    title_src_t t;
+    if (find_root(tid, root, sizeof(root)) || src_open(&t, root, tid)) {
+        snprintf(msg, cap, "%s is not on any connected drive", tid);
         return -1;
     }
-    if (find_root(tid, root, sizeof(root))) {
-        snprintf(msg, cap, "%s is not on any connected drive", tid);
+    char *list = malloc(strlen(on) + 3);
+    int data = 0;
+    if (list) {
+        snprintf(list, strlen(on) + 3, "\n%s\n", on);
+        for (char *c = list; *c; c++)
+            if (*c == ',')
+                *c = '\n';
+        for (int i = 0; i < t.ndlc_all; i++)
+            data += t.dlc[i].data && dlc_listed(list, t.dlc[i].pkg.content_id);
+    }
+    free(list);
+    src_close(&t);
+    if (data > DLC_LIMIT) {
+        snprintf(msg, cap, "At most %d add-ons with content can be on (unlock-only add-ons do not count)", DLC_LIMIT);
         return -1;
     }
     if (game_open(tid)) {
