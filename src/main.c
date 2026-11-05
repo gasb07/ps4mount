@@ -2490,14 +2490,21 @@ static void index_report(const char *root) {
     static pidx_t index[10]; /* usb0-7, ext0-1 */
     static pidx_game_t games[MAX_TITLES];
     pidx_t *idx = &index[(root[5] == 'e' ? 8 : 0) + (root[8] - '0')];
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
     pidx_scan(idx, root, (const char (*)[128])g_cfg.paths, g_cfg.npaths, pidx_read_pkg);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
     int n = pidx_group(idx, games, MAX_TITLES), other = 0, incomplete = 0;
     for (int i = 0; i < idx->count; i++) {
-        other += idx->pkgs[i].kind == PIDX_OTHER;
+        if (idx->pkgs[i].kind == PIDX_OTHER) {
+            other++;
+            printf("[index] not usable: %s\n", idx->pkgs[i].path);
+        }
         incomplete += idx->pkgs[i].incomplete;
     }
-    printf("[index] %s: %d pkg(s), %d title(s), %d not usable, %d incomplete, %d past the limit\n", root, idx->count, n,
-           other, incomplete, idx->skipped);
+    printf("[index] %s: %d pkg(s), %d title(s), %d not usable, %d incomplete, %d past the limit, %ld ms\n", root, idx->count,
+           n, other, incomplete, idx->skipped,
+           (long)(t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000);
     for (int i = 0; i < n; i++) {
         const pidx_game_t *g = &games[i];
         printf("[index] %s game=%s update=%s add-ons=%d other copies=%d\n", g->title_id,
