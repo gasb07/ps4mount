@@ -46,6 +46,7 @@
 #include "logts.h"
 #include "origin.h"
 #include "pkg.h"
+#include "pkgindex.h"
 #include "web.h"
 #include "icon_data.h"
 
@@ -2484,6 +2485,27 @@ static void clear_removed_dlc(void) {
     closedir(d);
 }
 
+/* What the index found on a drive, for the log. Nothing uses it yet. */
+static void index_report(const char *root) {
+    static pidx_t index[10]; /* usb0-7, ext0-1 */
+    static pidx_game_t games[MAX_TITLES];
+    pidx_t *idx = &index[(root[5] == 'e' ? 8 : 0) + (root[8] - '0')];
+    pidx_scan(idx, root, (const char (*)[128])g_cfg.paths, g_cfg.npaths, pidx_read_pkg);
+    int n = pidx_group(idx, games, MAX_TITLES), other = 0, incomplete = 0;
+    for (int i = 0; i < idx->count; i++) {
+        other += idx->pkgs[i].kind == PIDX_OTHER;
+        incomplete += idx->pkgs[i].incomplete;
+    }
+    printf("[index] %s: %d pkg(s), %d title(s), %d not usable, %d incomplete, %d past the limit\n", root, idx->count, n,
+           other, incomplete, idx->skipped);
+    for (int i = 0; i < n; i++) {
+        const pidx_game_t *g = &games[i];
+        printf("[index] %s game=%s update=%s add-ons=%d other copies=%d\n", g->title_id,
+               g->game < 0 ? "none" : idx->pkgs[g->game].path, g->update < 0 ? "none" : idx->pkgs[g->update].path,
+               g->addons, g->copies);
+    }
+}
+
 static void scan_root(const char *root, int fresh, int reconnected) {
     const char *label = root + 5; /* "usb0" / "ext0" */
     if (!has_candidates(root)) {
@@ -2498,6 +2520,8 @@ static void scan_root(const char *root, int fresh, int reconnected) {
     int moved = adopt_root_pkgs(root);
     if (moved && !fresh)
         notify("%s: %d new package(s) found", label, moved);
+    if (fresh)
+        index_report(root);
     char lib[PATH_MAX];
     snprintf(lib, sizeof(lib), "%s/ps4", root);
     DIR *d = opendir(lib);
