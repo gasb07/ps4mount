@@ -120,6 +120,7 @@ int pidx_scan(pidx_t *idx, const char *root, const char (*folders)[128], int nfo
     char dir[PATH_MAX];
     int sorted = idx->count;
     idx->skipped = 0;
+    snprintf(idx->root, sizeof(idx->root), "%s", root);
     for (int i = 0; i < idx->count; i++)
         idx->pkgs[i].seen = 0;
     for (int i = 0; i < nfolders; i++) {
@@ -185,6 +186,19 @@ static int title_cmp(const void *a, const void *b) {
     return strcmp(((const pidx_game_t *)a)->title_id, ((const pidx_game_t *)b)->title_id);
 }
 
+/* An update kept aside in <root>/ps4/<TID>/replaced is not in use. */
+static int kept_aside(const pidx_t *idx, const char *path) {
+    size_t n = strlen(idx->root);
+    if (strncmp(path, idx->root, n) || strncmp(path + n, "/ps4/", 5))
+        return 0;
+    const char *s = strchr(path + n + 5, '/');
+    return s && !strncmp(s, "/replaced/", 10);
+}
+
+static int usable(const pidx_t *idx, const pidx_pkg_t *p) {
+    return p->kind != PIDX_OTHER && !p->incomplete && !p->ignored && !kept_aside(idx, p->path);
+}
+
 /* Pkgs come sorted by path: an equal version keeps the first one. */
 static int newer(const pidx_t *idx, int candidate, int current) {
     return current < 0 || strcmp(idx->pkgs[candidate].ver, idx->pkgs[current].ver) > 0;
@@ -194,7 +208,7 @@ int pidx_group(const pidx_t *idx, pidx_game_t *out, int max) {
     int n = 0;
     for (int i = 0; i < idx->count; i++) {
         const pidx_pkg_t *p = &idx->pkgs[i];
-        if (p->kind == PIDX_OTHER || p->incomplete)
+        if (!usable(idx, p))
             continue;
         pidx_game_t *g = NULL;
         for (int k = 0; k < n && !g; k++)
@@ -222,4 +236,27 @@ int pidx_group(const pidx_t *idx, pidx_game_t *out, int max) {
     if (n)
         qsort(out, (size_t)n, sizeof(out[0]), title_cmp);
     return n;
+}
+
+int pidx_resolve(const pidx_t *idx, const char *tid, const char *legacy_app, const char *legacy_patch, char *app,
+                 char *patch, size_t n) {
+    int game = -1, update = -1, current = -1;
+    for (int i = 0; i < idx->count; i++) {
+        const pidx_pkg_t *p = &idx->pkgs[i];
+        if (strcmp(p->title_id, tid) || !usable(idx, p))
+            continue;
+        if (p->kind == PIDX_GAME && newer(idx, i, game))
+            game = i;
+        if (p->kind == PIDX_UPDATE && newer(idx, i, update))
+            update = i;
+        if (p->kind == PIDX_UPDATE && !strcmp(p->path, legacy_patch))
+            current = i;
+    }
+    struct stat st;
+    int organized = !stat(legacy_app, &st);
+    snprintf(app, n, "%s", organized || game < 0 ? legacy_app : idx->pkgs[game].path);
+    /* an equal version keeps the update in use: no reason to add the game again */
+    int use_update = update >= 0 && (current < 0 || strcmp(idx->pkgs[update].ver, idx->pkgs[current].ver) > 0);
+    snprintf(patch, n, "%s", use_update ? idx->pkgs[update].path : legacy_patch);
+    return organized || game >= 0 ? 0 : -1;
 }

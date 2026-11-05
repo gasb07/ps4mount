@@ -209,6 +209,86 @@ static void test_group(void) {
     pidx_free(&idx);
 }
 
+static void legacy(char *app, char *patch, size_t n, const char *tid) {
+    snprintf(app, n, "%s/ps4/%s/app.pkg", g_root, tid);
+    snprintf(patch, n, "%s/ps4/%s/patch.pkg", g_root, tid);
+}
+
+static int ends(const char *s, const char *tail) {
+    size_t a = strlen(s), b = strlen(tail);
+    return a >= b && !strcmp(s + a - b, tail);
+}
+
+static void test_resolve(void) {
+    fresh_root("resolve");
+    /* a game organized by an earlier version keeps its files, whatever else is on the drive */
+    put("ps4/CUSA00001/app.pkg", "gd CUSA00001 01.00");
+    put("ps4/CUSA00001/patch.pkg", "gp CUSA00001 01.05");
+    put("copies/game.pkg", "gd CUSA00001 09.00");
+    put("copies/same.pkg", "gp CUSA00001 01.05");
+    /* an update chosen in the panel: what was kept aside does not come back */
+    put("ps4/CUSA00002/app.pkg", "gd CUSA00002 01.00");
+    put("ps4/CUSA00002/patch.pkg", "gp CUSA00002 01.01");
+    put("ps4/CUSA00002/replaced/patch-1.pkg", "gp CUSA00002 01.09");
+    /* a newer update on the drive is used, as when it was moved in */
+    put("ps4/CUSA00003/app.pkg", "gd CUSA00003 01.00");
+    put("ps4/CUSA00003/patch.pkg", "gp CUSA00003 01.01");
+    put("new/CUSA00003-update.pkg", "gp CUSA00003 01.02");
+    /* a game used where it is */
+    put("my games/Game Four/any name.pkg", "gd CUSA00004 01.00");
+    put("my games/Game Four/any update.pkg", "gp CUSA00004 01.03");
+    /* moved back in the panel: not used */
+    put("back/game.pkg", "gd CUSA00005 01.00");
+    /* not on the drive as a game */
+    put("lone.pkg", "gp CUSA00006 01.00");
+    pidx_t idx = {0};
+    pidx_scan(&idx, g_root, k_root_only, 1, read_test);
+    for (int i = 0; i < idx.count; i++)
+        idx.pkgs[i].ignored = ends(idx.pkgs[i].path, "back/game.pkg");
+    char la[PATH_MAX], lp[PATH_MAX], app[PATH_MAX], patch[PATH_MAX];
+
+    legacy(la, lp, sizeof(la), "CUSA00001");
+    CHECK(!pidx_resolve(&idx, "CUSA00001", la, lp, app, patch, sizeof(app)));
+    CHECK(!strcmp(app, la) && !strcmp(patch, lp));
+
+    legacy(la, lp, sizeof(la), "CUSA00002");
+    CHECK(!pidx_resolve(&idx, "CUSA00002", la, lp, app, patch, sizeof(app)));
+    CHECK(!strcmp(app, la) && !strcmp(patch, lp));
+
+    legacy(la, lp, sizeof(la), "CUSA00003");
+    CHECK(!pidx_resolve(&idx, "CUSA00003", la, lp, app, patch, sizeof(app)));
+    CHECK(!strcmp(app, la) && ends(patch, "new/CUSA00003-update.pkg"));
+
+    legacy(la, lp, sizeof(la), "CUSA00004");
+    CHECK(!pidx_resolve(&idx, "CUSA00004", la, lp, app, patch, sizeof(app)));
+    CHECK(ends(app, "Game Four/any name.pkg") && ends(patch, "Game Four/any update.pkg"));
+
+    legacy(la, lp, sizeof(la), "CUSA00005");
+    CHECK(pidx_resolve(&idx, "CUSA00005", la, lp, app, patch, sizeof(app)) == -1);
+    legacy(la, lp, sizeof(la), "CUSA00006");
+    CHECK(pidx_resolve(&idx, "CUSA00006", la, lp, app, patch, sizeof(app)) == -1);
+    legacy(la, lp, sizeof(la), "CUSA00007");
+    CHECK(pidx_resolve(&idx, "CUSA00007", la, lp, app, patch, sizeof(app)) == -1);
+    CHECK(!strcmp(app, la) && !strcmp(patch, lp)); /* what the caller gets without a game */
+
+    /* grouping agrees: kept aside and moved back do not count */
+    pidx_game_t g[8];
+    int n = pidx_group(&idx, g, 8), five = 0;
+    for (int i = 0; i < n; i++) {
+        five |= !strcmp(g[i].title_id, "CUSA00005");
+        if (!strcmp(g[i].title_id, "CUSA00002"))
+            CHECK(ends(idx.pkgs[g[i].update].path, "CUSA00002/patch.pkg"));
+    }
+    CHECK(!five);
+
+    /* an empty index still finds an organized game: the panel can ask before the first scan */
+    pidx_t none = {0};
+    legacy(la, lp, sizeof(la), "CUSA00001");
+    CHECK(!pidx_resolve(&none, "CUSA00001", la, lp, app, patch, sizeof(app)));
+    CHECK(!strcmp(app, la) && !strcmp(patch, lp));
+    pidx_free(&idx);
+}
+
 static void test_real_reader(void) {
     fresh_root("real");
     put("junk.pkg", "not a pkg");
@@ -224,6 +304,7 @@ int main(void) {
     test_folders();
     test_cache();
     test_group();
+    test_resolve();
     test_real_reader();
     printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed != 0;

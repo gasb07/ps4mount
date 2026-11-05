@@ -4,6 +4,7 @@
 #pragma once
 
 #include <limits.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #define PIDX_MAX_DEPTH 8    /* folder levels searched below each folder */
@@ -19,12 +20,14 @@ typedef struct {
     int incomplete; /* smaller than its header says: still being copied, or cut */
     char title_id[10], content_id[37], ver[8];
     int seen;
+    int ignored; /* set by the caller after a scan: left out of the games */
 } pidx_pkg_t;
 
 typedef struct {
     pidx_pkg_t *pkgs; /* sorted by path after a scan */
     int count, cap;
     int skipped; /* pkgs past PIDX_MAX_PKGS in the last scan */
+    char root[32];
 } pidx_t;
 
 /* A game and what the drive has for it: indexes in pidx_t.pkgs, -1 for none. */
@@ -49,3 +52,10 @@ void pidx_free(pidx_t *idx);
 /* Groups the pkgs per title, sorted by title ID: the highest version is used, and between
  * equal versions the first by path. How many titles were put in out. */
 int pidx_group(const pidx_t *idx, pidx_game_t *out, int max);
+
+/* The pkgs to use for tid. A game organized by an earlier version (legacy_app) stays as it is;
+ * otherwise the index gives it. The update is the highest version, legacy_patch when no
+ * other one is higher. app and patch always get a path, the legacy one when nothing else
+ * applies. 0 when the game exists, -1 when it does not. */
+int pidx_resolve(const pidx_t *idx, const char *tid, const char *legacy_app, const char *legacy_patch, char *app,
+                 char *patch, size_t n);
