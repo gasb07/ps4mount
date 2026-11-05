@@ -9,6 +9,7 @@
 
 char g_stub_call[64], g_stub_arg[4096];
 int g_stub_calls;
+size_t g_stub_dlc_len;
 
 static int record(const char *call, const char *arg, char *msg, size_t cap) {
     snprintf(g_stub_call, sizeof(g_stub_call), "%s", call);
@@ -53,6 +54,7 @@ int app_choose_update(const char *tid, const char *rel, char *msg, size_t cap) {
 int app_choose_dlc(const char *tid, const char *on, char *msg, size_t cap) {
     char arg[4096];
     snprintf(arg, sizeof(arg), "%s %s", tid, on);
+    g_stub_dlc_len = strlen(on);
     return record("dlc", arg, msg, cap);
 }
 int app_launch(const char *tid, int force, char *msg, size_t cap) {

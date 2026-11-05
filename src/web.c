@@ -155,11 +155,24 @@ void web_serve(int listen_fd) {
         web_handle(fd);
 }
 
+/* Largest request: the add-on choice of a game with hundreds of add-ons lists them all. */
+#define REQ_MAX (256 * 1024)
+
+static void web_request(int fd, char *req, size_t size);
+
 void web_handle(int fd) {
+    char *req = malloc(REQ_MAX);
+    if (req)
+        web_request(fd, req, REQ_MAX);
+    else
+        close(fd);
+    free(req);
+}
+
+static void web_request(int fd, char *req, size_t size) {
     struct timeval tv = {5, 0};
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    char req[8192];
-    ssize_t n = read(fd, req, sizeof(req) - 1);
+    ssize_t n = read(fd, req, size - 1);
     if (n <= 0) {
         close(fd);
         return;
@@ -171,8 +184,8 @@ void web_handle(int fd) {
     if (!cl)
         cl = strstr(req, "content-length:");
     long want = cl ? strtol(cl + 15, NULL, 10) : 0;
-    while (want > 0 && (size_t)n < sizeof(req) - 1 && (!body || (long)(n - (body + 4 - req)) < want)) {
-        ssize_t m = read(fd, req + n, sizeof(req) - 1 - (size_t)n);
+    while (want > 0 && (size_t)n < size - 1 && (!body || (long)(n - (body + 4 - req)) < want)) {
+        ssize_t m = read(fd, req + n, size - 1 - (size_t)n);
         if (m <= 0)
             break;
         n += m;
@@ -235,15 +248,17 @@ void web_handle(int fd) {
             json_msg(fd, !rc, msg);
         }
     } else if (post && !strncmp(path, "/api/dlc?", 9)) {
-        char on[64 * 37 + 1];
+        size_t cap = strlen(body) + 1; /* the decoded list is never longer than the body */
+        char *on = malloc(cap);
         if (title_param(path, tid))
             json_msg(fd, 0, "invalid title_id");
-        else if (form_value(body, "on", on, sizeof(on)))
+        else if (!on || form_value(body, "on", on, cap))
             json_msg(fd, 0, "invalid add-on list");
         else {
             int rc = app_choose_dlc(tid, on, msg, sizeof(msg));
             json_msg(fd, !rc, msg);
         }
+        free(on);
     } else if (post && !strncmp(path, "/api/launch?", 12)) {
         if (title_param(path, tid))
             json_msg(fd, 0, "invalid title_id");
