@@ -176,9 +176,17 @@ int main(void) {
     {
         /* a game with hundreds of add-ons: the list is far longer than one read */
         static char body[900 * 39 + 8], req[sizeof(body) + 256];
-        size_t o = (size_t)snprintf(body, sizeof(body), "on=");
-        for (int i = 0; i < 900; i++)
-            o += (size_t)snprintf(body + o, sizeof(body) - o, "%sEP0001-CUSA00791_00-A%015d", i ? "%2C" : "", i);
+        size_t o = 3;
+        memcpy(body, "on=", o);
+        for (int i = 0; i < 900; i++) {
+            char one[48];
+            int n = snprintf(one, sizeof(one), "%sEP0001-CUSA00791_00-A%015d", i ? "%2C" : "", i);
+            if (n < 0 || (size_t)n >= sizeof(one) || o + (size_t)n >= sizeof(body))
+                break;
+            memcpy(body + o, one, (size_t)n);
+            o += (size_t)n;
+        }
+        body[o] = 0;
         int len = snprintf(req, sizeof(req), "POST /api/dlc?title_id=CUSA00791 HTTP/1.1\r\nContent-Length: %zu\r\n\r\n%s",
                            o, body);
         r = ask2(req, (size_t)len, NULL);
