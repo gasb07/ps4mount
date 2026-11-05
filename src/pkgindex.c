@@ -93,7 +93,18 @@ static void walk(pidx_t *idx, int sorted, const char *dir, int depth, pidx_read_
         struct stat st;
         if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, ".."))
             continue;
-        if ((size_t)snprintf(path, sizeof(path), "%s/%s", dir, e->d_name) >= sizeof(path) || lstat(path, &st))
+        /* a drive can hold hundreds of thousands of files: asking for each one takes minutes,
+         * so only pkgs are asked about when the listing already gives the type */
+        if (e->d_type == DT_LNK || (e->d_type == DT_REG && !is_pkg_name(e->d_name)))
+            continue;
+        if ((size_t)snprintf(path, sizeof(path), "%s/%s", dir, e->d_name) >= sizeof(path))
+            continue;
+        if (e->d_type == DT_DIR) {
+            if (depth < PIDX_MAX_DEPTH && !skip_folder(e->d_name))
+                walk(idx, sorted, path, depth + 1, read);
+            continue;
+        }
+        if (lstat(path, &st))
             continue;
         if (S_ISDIR(st.st_mode)) {
             if (depth < PIDX_MAX_DEPTH && !skip_folder(e->d_name))
