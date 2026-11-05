@@ -165,11 +165,17 @@ void pidx_read_pkg(pidx_pkg_t *p) {
                    : !strcmp(cat->sval, "ac") ? PIDX_ADDON
                                               : PIDX_OTHER;
         if (kind != PIDX_OTHER && !strncmp(pkg->title_id, "CUSA", 4) && pkg_fake_key(pkg)) {
-            const sfo_item_t *ver = sfo_get(sfo, "APP_VER");
+            const sfo_item_t *ver = kind == PIDX_ADDON ? NULL : sfo_get(sfo, "APP_VER");
+            const sfo_item_t *name = sfo_get(sfo, "TITLE");
             if (!ver)
                 ver = sfo_get(sfo, "VERSION");
             p->kind = kind;
             p->incomplete = p->size < pkg->pkg_size;
+            p->pkg_size = pkg->pkg_size;
+            memcpy(p->digest, pkg->digest, sizeof(p->digest));
+            p->data = pkg->header[0x77] == 0x1b; /* content type: 0x1b with data, 0x1c license only */
+            if (name && !name->is_int)
+                snprintf(p->name, sizeof(p->name), "%.127s", name->sval);
             snprintf(p->title_id, sizeof(p->title_id), "%s", pkg->title_id);
             snprintf(p->content_id, sizeof(p->content_id), "%s", pkg->content_id);
             if (ver && !ver->is_int)
@@ -195,7 +201,7 @@ static int kept_aside(const pidx_t *idx, const char *path) {
     return s && !strncmp(s, "/replaced/", 10);
 }
 
-static int usable(const pidx_t *idx, const pidx_pkg_t *p) {
+int pidx_usable(const pidx_t *idx, const pidx_pkg_t *p) {
     return p->kind != PIDX_OTHER && !p->incomplete && !p->ignored && !kept_aside(idx, p->path);
 }
 
@@ -208,7 +214,7 @@ int pidx_group(const pidx_t *idx, pidx_game_t *out, int max) {
     int n = 0;
     for (int i = 0; i < idx->count; i++) {
         const pidx_pkg_t *p = &idx->pkgs[i];
-        if (!usable(idx, p))
+        if (!pidx_usable(idx, p))
             continue;
         pidx_game_t *g = NULL;
         for (int k = 0; k < n && !g; k++)
@@ -238,25 +244,40 @@ int pidx_group(const pidx_t *idx, pidx_game_t *out, int max) {
     return n;
 }
 
-int pidx_resolve(const pidx_t *idx, const char *tid, const char *legacy_app, const char *legacy_patch, char *app,
-                 char *patch, size_t n) {
-    int game = -1, update = -1, current = -1;
+int pidx_resolve(const pidx_t *idx, const char *want, const char *tid, const char *legacy_app, const char *legacy_patch,
+                 char *app, char *patch, size_t n) {
+    int game = -1, update = -1, current = -1, chosen = -1;
     for (int i = 0; i < idx->count; i++) {
         const pidx_pkg_t *p = &idx->pkgs[i];
-        if (strcmp(p->title_id, tid) || !usable(idx, p))
+        if (strcmp(p->title_id, tid) || !pidx_usable(idx, p))
             continue;
         if (p->kind == PIDX_GAME && newer(idx, i, game))
             game = i;
-        if (p->kind == PIDX_UPDATE && newer(idx, i, update))
+        if (p->kind != PIDX_UPDATE)
+            continue;
+        if (newer(idx, i, update))
             update = i;
-        if (p->kind == PIDX_UPDATE && !strcmp(p->path, legacy_patch))
+        if (!strcmp(p->path, legacy_patch))
             current = i;
+        if (want && want[0] && chosen < 0 && !strcmp(p->ver, want))
+            chosen = i;
     }
     struct stat st;
     int organized = !stat(legacy_app, &st);
     snprintf(app, n, "%s", organized || game < 0 ? legacy_app : idx->pkgs[game].path);
+    if (chosen >= 0)
+        update = chosen;
     /* an equal version keeps the update in use: no reason to add the game again */
-    int use_update = update >= 0 && (current < 0 || strcmp(idx->pkgs[update].ver, idx->pkgs[current].ver) > 0);
+    int use_update = update >= 0 && (current < 0 || strcmp(idx->pkgs[update].ver, idx->pkgs[current].ver) > 0 ||
+                                     (chosen >= 0 && strcmp(idx->pkgs[update].ver, idx->pkgs[current].ver)));
     snprintf(patch, n, "%s", use_update ? idx->pkgs[update].path : legacy_patch);
     return organized || game >= 0 ? 0 : -1;
+}
+
+int pidx_updates(const pidx_t *idx, const char *tid, int *out, int max) {
+    int n = 0;
+    for (int i = 0; i < idx->count && n < max; i++)
+        if (idx->pkgs[i].kind == PIDX_UPDATE && !strcmp(idx->pkgs[i].title_id, tid) && pidx_usable(idx, &idx->pkgs[i]))
+            out[n++] = i;
+    return n;
 }

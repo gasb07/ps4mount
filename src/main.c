@@ -310,9 +310,40 @@ static int dlc_cmp(const void *a, const void *b) {
     return strcmp(((const dlc_src_t *)a)->pkg.content_id, ((const dlc_src_t *)b)->pkg.content_id);
 }
 
-/* Add-ons are used when their folder names match the pkg (title ID and label). Without a
- * <TID>.dlcoff file, every unlock-only add-on is on, and add-ons with data up to DLC_LIMIT. */
-static void dlc_open(title_src_t *t) {
+static int sfo_serves(const sfo_t *sfo, const char *prefix) {
+    char key[32];
+    for (int i = 1; i <= 7; i++) {
+        snprintf(key, sizeof(key), "SERVICE_ID_ADDCONT_ADD_%d", i);
+        const sfo_item_t *it = sfo_get(sfo, key);
+        if (it && !it->is_int && !strncmp(it->sval, prefix, 19))
+            return 1;
+    }
+    return 0;
+}
+
+/* A place for one more add-on, NULL when there is no memory. */
+static dlc_src_t *dlc_slot(title_src_t *t, int *cap) {
+    if (t->ndlc == *cap) {
+        int grown = *cap ? *cap * 2 : 16;
+        dlc_src_t *more = realloc(t->dlc, sizeof(*more) * (size_t)grown);
+        if (!more)
+            return NULL;
+        t->dlc = more;
+        *cap = grown;
+    }
+    dlc_src_t *a = &t->dlc[t->ndlc];
+    memset(a, 0, sizeof(*a));
+    return a;
+}
+
+static int dlc_removed(const char *content_id) {
+    char rm[96];
+    snprintf(rm, sizeof(rm), STATE_DIR "/%s.removed", content_id);
+    return exists(rm); /* deleted on the console */
+}
+
+/* Add-ons kept next to the game by earlier versions: <dir>/addcont/<ADD-ON TID>/<LABEL>/ac.pkg. */
+static void dlc_open_organized(title_src_t *t, int *cap) {
     char base[PATH_MAX];
     snprintf(base, sizeof(base), "%s/addcont", t->dir);
     DIR *d = opendir(base);
@@ -320,7 +351,6 @@ static void dlc_open(title_src_t *t) {
         return;
     pkg_t *pkg = malloc(sizeof(*pkg));
     sfo_t *sfo = malloc(sizeof(*sfo));
-    int cap = 0;
     if (!pkg || !sfo) {
         free(pkg);
         free(sfo);
@@ -340,15 +370,9 @@ static void dlc_open(title_src_t *t) {
         while ((f = readdir(l))) {
             if (f->d_name[0] == '.' || strlen(f->d_name) != 16)
                 continue;
-            if (t->ndlc == cap) {
-                dlc_src_t *more = realloc(t->dlc, sizeof(*more) * (size_t)(cap ? cap * 2 : 16));
-                if (!more)
-                    break;
-                t->dlc = more;
-                cap = cap ? cap * 2 : 16;
-            }
-            dlc_src_t *a = &t->dlc[t->ndlc];
-            memset(a, 0, sizeof(*a));
+            dlc_src_t *a = dlc_slot(t, cap);
+            if (!a)
+                break;
             snprintf(a->path, sizeof(a->path), "%s/%s/ac.pkg", sub, f->d_name);
             if (!exists(a->path))
                 continue;
@@ -372,19 +396,58 @@ static void dlc_open(title_src_t *t) {
                 snprintf(a->ver, sizeof(a->ver), "%s", it && !it->is_int ? it->sval : "01.00");
             }
             pkg_close(pkg);
-            if (!ok)
-                continue;
-            char rm[96];
-            snprintf(rm, sizeof(rm), STATE_DIR "/%s.removed", a->pkg.content_id);
-            if (exists(rm)) /* deleted on the console */
-                continue;
-            t->ndlc++;
+            if (ok && !dlc_removed(a->pkg.content_id))
+                t->ndlc++;
         }
         closedir(l);
     }
     closedir(d);
     free(pkg);
     free(sfo);
+}
+
+/* Add-ons the index found for this game: same title ID, or the game (or its update) names
+ * the add-on's content ID prefix in SERVICE_ID_ADDCONT_ADD_n, as regional versions do. A copy
+ * organized by an earlier version stays; between others the highest version is used. */
+static void dlc_open_indexed(title_src_t *t, pidx_t *idx, int *cap) {
+    size_t dir_len = strlen(t->dir);
+    for (int i = 0; i < idx->count; i++) {
+        pidx_pkg_t *p = &idx->pkgs[i];
+        if (p->kind != PIDX_ADDON || !pidx_usable(idx, p))
+            continue;
+        if (strcmp(p->title_id, t->app.title_id) && !sfo_serves(&t->app_sfo, p->content_id) &&
+            !(t->has_patch && sfo_serves(&t->patch_sfo, p->content_id)))
+            continue;
+        p->claimed = 1;
+        if (dlc_removed(p->content_id))
+            continue;
+        dlc_src_t *a = NULL;
+        for (int k = 0; k < t->ndlc && !a; k++)
+            if (!strcmp(t->dlc[k].pkg.content_id, p->content_id))
+                a = &t->dlc[k];
+        if (a && (!strncmp(a->path, t->dir, dir_len) || strcmp(p->ver, a->ver) <= 0))
+            continue;
+        if (!a && !(a = dlc_slot(t, cap)))
+            return;
+        else if (a == &t->dlc[t->ndlc])
+            t->ndlc++;
+        snprintf(a->path, sizeof(a->path), "%s", p->path);
+        snprintf(a->pkg.content_id, sizeof(a->pkg.content_id), "%s", p->content_id);
+        snprintf(a->pkg.title_id, sizeof(a->pkg.title_id), "%s", p->title_id);
+        a->pkg.pkg_size = p->pkg_size;
+        memcpy(a->pkg.digest, p->digest, sizeof(a->pkg.digest));
+        a->data = p->data;
+        snprintf(a->name, sizeof(a->name), "%s", p->name);
+        snprintf(a->ver, sizeof(a->ver), "%s", p->ver[0] ? p->ver : "01.00");
+    }
+}
+
+/* Add-ons of a game: the organized ones, then the ones the index found. Without a <TID>.dlcoff
+ * file, every unlock-only add-on is on, and add-ons with data up to DLC_LIMIT. */
+static void dlc_open(title_src_t *t, const char *root) {
+    int cap = 0;
+    dlc_open_organized(t, &cap);
+    dlc_open_indexed(t, index_of(root), &cap);
     if (!t->ndlc)
         return;
     qsort(t->dlc, (size_t)t->ndlc, sizeof(*t->dlc), dlc_cmp);
@@ -420,6 +483,19 @@ static void dlc_open(title_src_t *t) {
 
 static int first_time(const char *path);
 
+/* <TID>.upd: the version of the update chosen in the panel for a game used where it is. */
+static void update_wanted(const char *tid, char *ver, size_t n) {
+    char path[64];
+    snprintf(path, sizeof(path), STATE_DIR "/%s.upd", tid);
+    ver[0] = 0;
+    int fd = open(path, O_RDONLY);
+    if (fd < 0)
+        return;
+    ssize_t got = read(fd, ver, n - 1);
+    close(fd);
+    ver[got > 0 ? got : 0] = 0;
+}
+
 static int src_open(title_src_t *t, const char *root, const char *tid) {
     memset(t, 0, sizeof(*t));
     snprintf(t->dir, sizeof(t->dir), "%s/ps4/%s", root, tid);
@@ -427,7 +503,10 @@ static int src_open(title_src_t *t, const char *root, const char *tid) {
         char organized_app[PATH_MAX + 16], organized_patch[PATH_MAX + 16];
         snprintf(organized_app, sizeof(organized_app), "%s/app.pkg", t->dir);
         snprintf(organized_patch, sizeof(organized_patch), "%s/patch.pkg", t->dir);
-        pidx_resolve(index_of(root), tid, organized_app, organized_patch, t->app_path, t->patch_path, sizeof(t->app_path));
+        char want[16];
+        update_wanted(tid, want, sizeof(want));
+        pidx_resolve(index_of(root), want, tid, organized_app, organized_patch, t->app_path, t->patch_path,
+                     sizeof(t->app_path));
     }
     if (pkg_open(&t->app, t->app_path) || read_sfo(&t->app, &t->app_sfo)) {
         printf("[scan] %s: unreadable app pkg\n", t->app_path);
@@ -507,7 +586,7 @@ static int src_open(title_src_t *t, const char *root, const char *tid) {
         snprintf(t->marker + n, sizeof(t->marker) - n, "\n");
     }
     if (g_cfg.dlc)
-        dlc_open(t);
+        dlc_open(t, root);
     if (t->ndlc) {
         /* one line for all add-ons, so markers of titles without add-ons stay as before */
         uint8_t h[32];
@@ -848,7 +927,9 @@ static int ac_queue(const dlc_src_t *a, const char *game_tid, char *why, size_t 
     j->size = a->pkg.pkg_size;
     char pend[96];
     ac_pend_path(pend, sizeof(pend), j->cid);
-    if (accopy_mark(STATE_DIR, j->cid, a->path) || write_file(pend, "", 0, 0666)) {
+    char mark[PATH_MAX + 32];
+    snprintf(mark, sizeof(mark), "%s\ngame=%s\n", a->path, game_tid);
+    if (accopy_mark(STATE_DIR, j->cid, mark) || write_file(pend, "", 0, 0666)) {
         snprintf(why, cap, "state files not written");
         return -1;
     }
@@ -923,7 +1004,7 @@ static int ac_uninstall(const char *cid) {
 }
 
 /* Uninstalls the add-ons PS4Mount copied for game (every game when NULL): their .accopy
- * file holds the pkg path, <root>/ps4/<GAME>/addcont/... */
+ * file holds the pkg path and the game. */
 static void ac_uninstall_copies(const char *game) {
     DIR *d = opendir(STATE_DIR);
     if (!d)
@@ -932,7 +1013,7 @@ static void ac_uninstall_copies(const char *game) {
     while ((e = readdir(d))) {
         if (strlen(e->d_name) != 36 + 7 || strcmp(e->d_name + 36, ".accopy"))
             continue;
-        char cid[40], path[96], pkg[PATH_MAX] = "", tag[16];
+        char cid[40], path[96], pkg[PATH_MAX + 32] = "", tag[16], owner[24];
         snprintf(cid, sizeof(cid), "%.36s", e->d_name);
         snprintf(path, sizeof(path), STATE_DIR "/%s", e->d_name);
         int fd = open(path, O_RDONLY);
@@ -941,8 +1022,10 @@ static void ac_uninstall_copies(const char *game) {
             pkg[n > 0 ? n : 0] = 0;
             close(fd);
         }
+        /* marks from earlier versions only hold the path, inside the game's folder */
         snprintf(tag, sizeof(tag), "/ps4/%s/", game ? game : "");
-        if (game && !strstr(pkg, tag))
+        snprintf(owner, sizeof(owner), "game=%s\n", game ? game : "");
+        if (game && !strstr(pkg, tag) && !strstr(pkg, owner))
             continue;
         char copy[PATH_MAX];
         ac_copy_path(copy, sizeof(copy), cid);
@@ -2061,132 +2144,6 @@ static int first_time(const char *path) {
 
 
 /* 1 when sfo lists the add-on prefix (UP0000-CUSA00000_00) as one of its add-on services. */
-static int sfo_serves(const sfo_t *sfo, const char *prefix) {
-    char key[32];
-    for (int i = 1; i <= 7; i++) {
-        snprintf(key, sizeof(key), "SERVICE_ID_ADDCONT_ADD_%d", i);
-        const sfo_item_t *it = sfo_get(sfo, key);
-        if (it && !it->is_int && !strncmp(it->sval, prefix, 19))
-            return 1;
-    }
-    return 0;
-}
-
-/* The game on this drive an add-on belongs to: same title ID, or a game (or its
- * update) that names the add-on's content ID prefix in SERVICE_ID_ADDCONT_ADD_n
- * (regional versions share add-ons this way). */
-static int find_dlc_game(const char *root, const pkg_t *dlc, char *tid) {
-    char lib[PATH_MAX], p[PATH_MAX];
-    snprintf(lib, sizeof(lib), "%s/ps4", root);
-    snprintf(p, sizeof(p), "%s/%s/app.pkg", lib, dlc->title_id);
-    if (exists(p)) {
-        snprintf(tid, 10, "%s", dlc->title_id);
-        return 0;
-    }
-    DIR *d = opendir(lib);
-    if (!d)
-        return -1;
-    struct dirent *e;
-    int found = 0;
-    while (!found && (e = readdir(d))) {
-        if (strlen(e->d_name) != 9 || strncmp(e->d_name, "CUSA", 4))
-            continue;
-        static const char *names[] = {"app.pkg", "patch.pkg"};
-        for (int i = 0; i < 2 && !found; i++) {
-            pkg_t pkg;
-            sfo_t sfo;
-            snprintf(p, sizeof(p), "%s/%s/%s", lib, e->d_name, names[i]);
-            if (!exists(p) || pkg_open(&pkg, p))
-                continue;
-            found = !read_sfo(&pkg, &sfo) && sfo_serves(&sfo, dlc->content_id);
-            pkg_close(&pkg);
-        }
-        if (found)
-            snprintf(tid, 10, "%s", e->d_name);
-    }
-    closedir(d);
-    return found ? 0 : -1;
-}
-
-/* Add-ons left in place during one adoption run, reported in one notification. */
-static int g_dlc_orphans, g_dlc_dupes;
-
-/* Add-ons waiting for their game: checked again only when the games of the drive
- * change (the check opens the pkg of every game). */
-typedef struct {
-    char *path;
-    unsigned long sig;
-} waiting_t;
-
-static waiting_t *g_waiting;
-static size_t g_nwaiting, g_capwaiting;
-static unsigned long g_lib_sig; /* games of the drive being scanned */
-
-/* Signature of the games in <root>/ps4: changes when a game is added or removed. */
-static unsigned long lib_signature(const char *root) {
-    char lib[PATH_MAX], p[PATH_MAX];
-    snprintf(lib, sizeof(lib), "%s/ps4", root);
-    DIR *d = opendir(lib);
-    if (!d)
-        return 0;
-    struct dirent *e;
-    unsigned long sig = 5381;
-    while ((e = readdir(d))) {
-        if (strlen(e->d_name) != 9 || strncmp(e->d_name, "CUSA", 4))
-            continue;
-        snprintf(p, sizeof(p), "%s/%s/app.pkg", lib, e->d_name);
-        if (!exists(p))
-            continue;
-        unsigned long h = 0;
-        for (const char *c = e->d_name; *c; c++)
-            h = h * 33 + (unsigned char)*c;
-        sig += h; /* order independent */
-    }
-    closedir(d);
-    return sig;
-}
-
-static waiting_t *waiting_find(const char *path) {
-    for (size_t i = 0; i < g_nwaiting; i++)
-        if (!strcmp(g_waiting[i].path, path))
-            return &g_waiting[i];
-    return NULL;
-}
-
-static void waiting_set(const char *path, unsigned long sig) {
-    waiting_t *w = waiting_find(path);
-    if (w) {
-        w->sig = sig;
-        return;
-    }
-    if (g_nwaiting == g_capwaiting) {
-        size_t cap = g_capwaiting ? g_capwaiting * 2 : 64;
-        waiting_t *grown = realloc(g_waiting, cap * sizeof(*grown));
-        if (!grown)
-            return;
-        g_waiting = grown;
-        g_capwaiting = cap;
-    }
-    if ((g_waiting[g_nwaiting].path = strdup(path)))
-        g_waiting[g_nwaiting++].sig = sig;
-}
-
-static void waiting_drop(const char *path) {
-    waiting_t *w = waiting_find(path);
-    if (!w)
-        return;
-    free(w->path);
-    *w = g_waiting[--g_nwaiting];
-}
-
-/* Add-ons of root still waiting for their game. */
-static int waiting_count(const char *root) {
-    size_t l = strlen(root);
-    int n = 0;
-    for (size_t i = 0; i < g_nwaiting; i++)
-        n += !strncmp(g_waiting[i].path, root, l) && g_waiting[i].path[l] == '/' && exists(g_waiting[i].path);
-    return n;
-}
 
 /* Path of a file relative to the drive root it is on. */
 static const char *drive_rel(const char *root, const char *path) {
@@ -2194,7 +2151,6 @@ static const char *drive_rel(const char *root, const char *path) {
     return !strncmp(path, root, n) && path[n] == '/' ? path + n + 1 : path;
 }
 
-/* Records where a pkg moved into <root>/ps4/<TID>/<rel> came from. */
 /* A free name for an update kept aside: replaced/patch-<time>.pkg, with -1, -2... when two
  * are kept in the same second. 0 when found. */
 static int aside_name(const char *game, char *rel, size_t n) {
@@ -2212,48 +2168,6 @@ static int aside_name(const char *game, char *rel, size_t n) {
             return 0;
     }
     return -1;
-}
-
-static void record_origin(const char *root, const char *tid, const char *rel, const char *from) {
-    char game[PATH_MAX];
-    snprintf(game, sizeof(game), "%s/ps4/%s", root, tid);
-    if (origin_add(game, rel, drive_rel(root, from)))
-        printf("[scan] %s: could not record where %s came from\n", game, rel);
-}
-
-/* Moves an add-on pkg (ac) into <root>/ps4/<GAME>/addcont/<ADD-ON TID>/<LABEL>/ac.pkg. */
-static int adopt_dlc(const char *root, const char *name, const char *path, pkg_t *pkg) {
-    char game[10], dst[PATH_MAX];
-    if (find_dlc_game(root, pkg, game)) {
-        if (first_time(path)) {
-            /* a game served from another drive is mounted there too: only a real install counts */
-            printf("[scan] %s: no game for add-on %s on the drive%s, waiting\n", name, pkg->content_id,
-                   installed_internally(pkg->title_id) ? " (that title is installed on the console)" : "");
-            g_dlc_orphans++;
-        }
-        waiting_set(path, g_lib_sig);
-        return 0;
-    }
-    waiting_drop(path);
-    snprintf(dst, sizeof(dst), "%s/ps4/%s/addcont/%s/%s", root, game, pkg->title_id, pkg->content_id + 20);
-    mkdirs(dst, 0777);
-    snprintf(dst, sizeof(dst), "%s/ps4/%s/addcont/%s/%s/ac.pkg", root, game, pkg->title_id, pkg->content_id + 20);
-    if (exists(dst)) {
-        if (first_time(path)) {
-            printf("[scan] %s: %s already has this add-on, the copy was left in place\n", name, game);
-            g_dlc_dupes++;
-        }
-        return 0;
-    }
-    if (rename(path, dst)) {
-        printf("[scan] move %s: %s\n", path, strerror(errno));
-        return 0;
-    }
-    printf("[scan] moved %s -> %s\n", path, dst);
-    char rel[64];
-    snprintf(rel, sizeof(rel), "addcont/%s/%s/ac.pkg", pkg->title_id, pkg->content_id + 20);
-    record_origin(root, game, rel, path);
-    return 1;
 }
 
 typedef struct {
@@ -2307,37 +2221,6 @@ static void retry_clear(const char *tid) {
         memset(r, 0, sizeof(*r));
 }
 
-/* Add-ons found outside the ps4 folder go next to their game. Games and updates stay where
- * they are: the index finds them. */
-static int adopt_addons(const char *root) {
-    pidx_t *idx = index_of(root);
-    char lib[PATH_MAX];
-    int moved = 0;
-    snprintf(lib, sizeof(lib), "%s/ps4/", root);
-    g_dlc_orphans = g_dlc_dupes = 0;
-    g_lib_sig = lib_signature(root);
-    for (int i = 0; g_cfg.dlc && i < idx->count; i++) {
-        const pidx_pkg_t *p = &idx->pkgs[i];
-        if (p->kind != PIDX_ADDON || p->incomplete || p->ignored || !strncmp(p->path, lib, strlen(lib)))
-            continue;
-        waiting_t *w = waiting_find(p->path);
-        if (w && w->sig == g_lib_sig)
-            continue; /* waiting add-on, and no new game since the last check */
-        pkg_t pkg;
-        if (pkg_open(&pkg, p->path))
-            continue;
-        const char *name = strrchr(p->path, '/');
-        moved += adopt_dlc(root, name ? name + 1 : p->path, p->path, &pkg);
-        pkg_close(&pkg);
-    }
-    if (g_dlc_orphans)
-        notify("%s: %d add-on(s) wait for their game, which is not on this drive (see the log)", root + 5,
-               waiting_count(root));
-    if (g_dlc_dupes)
-        notify("%s: %d add-on copy(ies) were left in place because the game already has them", root + 5, g_dlc_dupes);
-    return moved;
-}
-
 /* Add-ons deleted on the console come back with their game: drive reconnected or
  * "Add to library" in the panel. */
 static void clear_removed_dlc(void) {
@@ -2365,6 +2248,7 @@ static long index_refresh(const char *root) {
     for (int i = 0; i < idx->count; i++) {
         pidx_pkg_t *p = &idx->pkgs[i];
         p->ignored = strncmp(p->path, lib, strlen(lib)) && restored_has(RESTORED_LIST, drive_rel(root, p->path), p->size);
+        p->claimed = 0;
     }
     clock_gettime(CLOCK_MONOTONIC, &t1);
     return (long)(t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000;
@@ -2447,12 +2331,6 @@ static void scan_root(const char *root, int fresh, int reconnected) {
         notify("Scanning %s for PS4 games...", label);
     if (reconnected)
         clear_removed_dlc();
-    int moved = adopt_addons(root);
-    if (moved) {
-        index_refresh(root);
-        if (!fresh)
-            notify("%s: %d new package(s) found", label, moved);
-    }
     if (fresh)
         index_report(root, index_ms);
     static title_t titles[MAX_TITLES];
@@ -2478,6 +2356,20 @@ static void scan_root(const char *root, int fresh, int reconnected) {
             t->state = -1; /* failed recently: tried again later */
         pending += t->state == 1;
         src_close(&src);
+    }
+    if (fresh && g_cfg.dlc) {
+        /* the games just opened claimed their add-ons */
+        pidx_t *idx = index_of(root);
+        int waiting = 0;
+        for (int i = 0; i < idx->count; i++) {
+            const pidx_pkg_t *p = &idx->pkgs[i];
+            if (p->kind == PIDX_ADDON && pidx_usable(idx, p) && !p->claimed && strncmp(p->path, lib, strlen(lib))) {
+                printf("[scan] add-on %s waits for its game: %s\n", p->content_id, p->path);
+                waiting++;
+            }
+        }
+        if (waiting)
+            notify("%s: %d add-on(s) wait for their game, which is not on this drive (see the log)", label, waiting);
     }
     if (over && (fresh || over > over_told)) {
         printf("[scan] %s: %d game(s) past the limit of %d not added\n", root, over, MAX_TITLES);
@@ -2934,7 +2826,7 @@ static int find_root(const char *tid, char *root, size_t n) {
             snprintf(r, sizeof(r), "/mnt/ext%d", i - 8);
         snprintf(la, sizeof(la), "%s/ps4/%s/app.pkg", r, tid);
         snprintf(lp, sizeof(lp), "%s/ps4/%s/patch.pkg", r, tid);
-        if (is_mountpoint(r) && !pidx_resolve(index_of(r), tid, la, lp, app, patch, sizeof(app))) {
+        if (is_mountpoint(r) && !pidx_resolve(index_of(r), NULL, tid, la, lp, app, patch, sizeof(app))) {
             snprintf(root, n, "%s", r);
             return 0;
         }
@@ -3351,7 +3243,7 @@ int app_icon(const char *tid, buf_t *out) {
     char la[PATH_MAX], lp[PATH_MAX], patch[PATH_MAX];
     snprintf(la, sizeof(la), "%s/ps4/%s/app.pkg", root, tid);
     snprintf(lp, sizeof(lp), "%s/ps4/%s/patch.pkg", root, tid);
-    pidx_resolve(index_of(root), tid, la, lp, p, patch, sizeof(p));
+    pidx_resolve(index_of(root), NULL, tid, la, lp, p, patch, sizeof(p));
     pkg_t pkg;
     if (pkg_open(&pkg, p))
         return -1;

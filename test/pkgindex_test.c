@@ -248,27 +248,27 @@ static void test_resolve(void) {
     char la[PATH_MAX], lp[PATH_MAX], app[PATH_MAX], patch[PATH_MAX];
 
     legacy(la, lp, sizeof(la), "CUSA00001");
-    CHECK(!pidx_resolve(&idx, "CUSA00001", la, lp, app, patch, sizeof(app)));
+    CHECK(!pidx_resolve(&idx, NULL, "CUSA00001", la, lp, app, patch, sizeof(app)));
     CHECK(!strcmp(app, la) && !strcmp(patch, lp));
 
     legacy(la, lp, sizeof(la), "CUSA00002");
-    CHECK(!pidx_resolve(&idx, "CUSA00002", la, lp, app, patch, sizeof(app)));
+    CHECK(!pidx_resolve(&idx, NULL, "CUSA00002", la, lp, app, patch, sizeof(app)));
     CHECK(!strcmp(app, la) && !strcmp(patch, lp));
 
     legacy(la, lp, sizeof(la), "CUSA00003");
-    CHECK(!pidx_resolve(&idx, "CUSA00003", la, lp, app, patch, sizeof(app)));
+    CHECK(!pidx_resolve(&idx, NULL, "CUSA00003", la, lp, app, patch, sizeof(app)));
     CHECK(!strcmp(app, la) && ends(patch, "new/CUSA00003-update.pkg"));
 
     legacy(la, lp, sizeof(la), "CUSA00004");
-    CHECK(!pidx_resolve(&idx, "CUSA00004", la, lp, app, patch, sizeof(app)));
+    CHECK(!pidx_resolve(&idx, NULL, "CUSA00004", la, lp, app, patch, sizeof(app)));
     CHECK(ends(app, "Game Four/any name.pkg") && ends(patch, "Game Four/any update.pkg"));
 
     legacy(la, lp, sizeof(la), "CUSA00005");
-    CHECK(pidx_resolve(&idx, "CUSA00005", la, lp, app, patch, sizeof(app)) == -1);
+    CHECK(pidx_resolve(&idx, NULL, "CUSA00005", la, lp, app, patch, sizeof(app)) == -1);
     legacy(la, lp, sizeof(la), "CUSA00006");
-    CHECK(pidx_resolve(&idx, "CUSA00006", la, lp, app, patch, sizeof(app)) == -1);
+    CHECK(pidx_resolve(&idx, NULL, "CUSA00006", la, lp, app, patch, sizeof(app)) == -1);
     legacy(la, lp, sizeof(la), "CUSA00007");
-    CHECK(pidx_resolve(&idx, "CUSA00007", la, lp, app, patch, sizeof(app)) == -1);
+    CHECK(pidx_resolve(&idx, NULL, "CUSA00007", la, lp, app, patch, sizeof(app)) == -1);
     CHECK(!strcmp(app, la) && !strcmp(patch, lp)); /* what the caller gets without a game */
 
     /* grouping agrees: kept aside and moved back do not count */
@@ -284,8 +284,55 @@ static void test_resolve(void) {
     /* an empty index still finds an organized game: the panel can ask before the first scan */
     pidx_t none = {0};
     legacy(la, lp, sizeof(la), "CUSA00001");
-    CHECK(!pidx_resolve(&none, "CUSA00001", la, lp, app, patch, sizeof(app)));
+    CHECK(!pidx_resolve(&none, NULL, "CUSA00001", la, lp, app, patch, sizeof(app)));
     CHECK(!strcmp(app, la) && !strcmp(patch, lp));
+    pidx_free(&idx);
+}
+
+static void test_update_choice(void) {
+    fresh_root("choice");
+    put("game.pkg", "gd CUSA00001 01.00");
+    put("u/a.pkg", "gp CUSA00001 01.02");
+    put("u/b.pkg", "gp CUSA00001 01.09");
+    put("u/c.pkg", "gp CUSA00001 01.05");
+    put("u/other.pkg", "gp CUSA00002 01.05");
+    put("ps4/CUSA00003/app.pkg", "gd CUSA00003 01.00");
+    put("ps4/CUSA00003/patch.pkg", "gp CUSA00003 01.01");
+    put("a/same.pkg", "gp CUSA00003 01.01");
+    put("ps4/CUSA00003/replaced/patch-1.pkg", "gp CUSA00003 01.00");
+    pidx_t idx = {0};
+    pidx_scan(&idx, g_root, k_root_only, 1, read_test);
+    char la[PATH_MAX], lp[PATH_MAX], app[PATH_MAX], patch[PATH_MAX];
+    legacy(la, lp, sizeof(la), "CUSA00001");
+    CHECK(!pidx_resolve(&idx, "01.05", "CUSA00001", la, lp, app, patch, sizeof(app)));
+    CHECK(ends(patch, "u/c.pkg"));
+    CHECK(!pidx_resolve(&idx, "", "CUSA00001", la, lp, app, patch, sizeof(app)));
+    CHECK(ends(patch, "u/b.pkg")); /* nothing chosen: the highest */
+    CHECK(!pidx_resolve(&idx, "07.00", "CUSA00001", la, lp, app, patch, sizeof(app)));
+    CHECK(ends(patch, "u/b.pkg")); /* the chosen one is gone: the highest */
+    legacy(la, lp, sizeof(la), "CUSA00003");
+    CHECK(!pidx_resolve(&idx, "01.01", "CUSA00003", la, lp, app, patch, sizeof(app)));
+    CHECK(!strcmp(patch, lp)); /* the same version twice: the one in use */
+    int ups[8];
+    CHECK(pidx_updates(&idx, "CUSA00001", ups, 8) == 3);
+    CHECK(pidx_updates(&idx, "CUSA00001", ups, 2) == 2);
+    CHECK(pidx_updates(&idx, "CUSA00003", ups, 8) == 2); /* kept aside does not count */
+    CHECK(pidx_updates(&idx, "CUSA00009", ups, 8) == 0);
+    pidx_free(&idx);
+}
+
+static void test_usable(void) {
+    fresh_root("usable");
+    put("add.pkg", "ac CUSA00001 01.00");
+    put("half.pkg", "ac CUSA00001 01.00 short");
+    put("bad.pkg", "xx");
+    put("ps4/CUSA00001/replaced/patch-1.pkg", "gp CUSA00001 01.00");
+    pidx_t idx = {0};
+    pidx_scan(&idx, g_root, k_root_only, 1, read_test);
+    CHECK(pidx_usable(&idx, find(&idx, "add.pkg")));
+    CHECK(!pidx_usable(&idx, find(&idx, "half.pkg")));
+    CHECK(!pidx_usable(&idx, find(&idx, "bad.pkg")));
+    CHECK(!pidx_usable(&idx, find(&idx, "ps4/CUSA00001/replaced/patch-1.pkg")));
     pidx_free(&idx);
 }
 
@@ -305,6 +352,8 @@ int main(void) {
     test_cache();
     test_group();
     test_resolve();
+    test_update_choice();
+    test_usable();
     test_real_reader();
     printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed != 0;
