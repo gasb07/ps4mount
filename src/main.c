@@ -2380,6 +2380,8 @@ static void index_report(const char *root, long ms) {
             other++;
             printf("[index] not usable: %s\n", idx->pkgs[i].path);
         }
+        if (idx->pkgs[i].ignored)
+            printf("[index] skip %s (moved back from ps4/ on request)\n", idx->pkgs[i].path);
         incomplete += idx->pkgs[i].incomplete;
     }
     printf("[index] %s: %d pkg(s), %d title(s), %d not usable, %d incomplete, %d past the limit, %ld ms\n", root, idx->count,
