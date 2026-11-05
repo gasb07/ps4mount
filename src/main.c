@@ -63,7 +63,7 @@
 #define BATCH_QUIET 10 /* seconds without writes to the system databases between groups */
 #define MAX_DLC_TIDS 8
 
-#define MAX_SCAN_PATHS 8
+#define MAX_SCAN_PATHS 64
 #define CONFIG_PATH STATE_DIR "/config.txt"
 #define RESTORED_LIST STATE_DIR "/restored.txt" /* pkgs moved back: not picked up again */
 
@@ -4023,6 +4023,7 @@ static void config_load(void) {
     config_t c = g_cfg;
     c.npaths = 0;
     char line[256], why[160], path[128];
+    int over = 0;
     while (fgets(line, sizeof(line), f)) {
         line[strcspn(line, "\r\n")] = 0;
         if (!strncmp(line, "batch=", 6))
@@ -4035,9 +4036,12 @@ static void config_load(void) {
             c.dlc_copy = atoi(line + 9) != 0;
         else if (!strncmp(line, "restore_batch=", 14))
             c.restore_batch = atoi(line + 14);
-        else if (!strncmp(line, "path=", 5) && c.npaths < MAX_SCAN_PATHS &&
-                 !clean_scan_path(line + 5, path, sizeof(path), why, sizeof(why)))
-            snprintf(c.paths[c.npaths++], sizeof(c.paths[0]), "%s", path);
+        else if (!strncmp(line, "path=", 5) && !clean_scan_path(line + 5, path, sizeof(path), why, sizeof(why))) {
+            if (c.npaths < MAX_SCAN_PATHS)
+                snprintf(c.paths[c.npaths++], sizeof(c.paths[0]), "%s", path);
+            else
+                over++;
+        }
     }
     fclose(f);
     if (c.batch_size < 1 || c.batch_size > 50)
@@ -4049,6 +4053,8 @@ static void config_load(void) {
     g_cfg = c;
     printf("[config] batch=%d batch_size=%d dlc=%d restore_batch=%d folders=%d\n", g_cfg.batch, g_cfg.batch_size,
            g_cfg.dlc, g_cfg.restore_batch, g_cfg.npaths);
+    if (over)
+        notify("Settings: %d folder(s) ignored, PS4Mount searches at most %d folders", over, MAX_SCAN_PATHS);
 }
 
 void app_config_json(buf_t *out) {
@@ -4085,7 +4091,7 @@ static void url_decode(const char *in, size_t len, char *out, size_t n) {
  * encoded); keys left out keep their value. */
 int app_config_set(const char *body, char *msg, size_t cap) {
     config_t c = g_cfg;
-    char value[1200], why[160] = "";
+    char value[MAX_SCAN_PATHS * 128], why[160] = ""; /* the folder list is the longest value */
     for (const char *p = body; p && *p;) {
         const char *amp = strchr(p, '&'), *eq = strchr(p, '=');
         size_t len = amp ? (size_t)(amp - p) : strlen(p);
