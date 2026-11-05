@@ -2837,8 +2837,8 @@ static int find_root(const char *tid, char *root, size_t n) {
 /* --- updates and add-ons chosen in the panel, starting a game --- */
 
 typedef struct {
-    char rel[64]; /* in the game folder: patch.pkg (in use) or replaced/<name> */
-    char ver[16], name[256];
+    char rel[64]; /* patch.pkg (in use), replaced/<name> in the game folder, or version/<version> */
+    char ver[16], name[256], path[PATH_MAX];
 } update_t;
 
 static int update_cmp(const void *a, const void *b) {
@@ -2849,8 +2849,9 @@ static int update_cmp(const void *a, const void *b) {
     return strcmp(y->ver, x->ver); /* then the newest */
 }
 
-/* The updates of the game folder: patch.pkg and the ones kept in replaced/. */
-static int list_updates(const char *game, const char *tid, update_t *out, int max) {
+/* The updates of a game: patch.pkg and the ones kept in replaced/ in the game folder, then the
+ * ones the index found. active is the update in use, "" for none. */
+static int list_updates(const char *root, const char *game, const char *tid, const char *active, update_t *out, int max) {
     int n = 0;
     char sub[PATH_MAX], p[PATH_MAX + 64];
     snprintf(sub, sizeof(sub), "%s/replaced", game);
@@ -2884,10 +2885,39 @@ static int list_updates(const char *game, const char *tid, update_t *out, int ma
             snprintf(was, sizeof(was), "%s", u->rel);
         const char *base = strrchr(was, '/');
         snprintf(u->name, sizeof(u->name), "%s", base ? base + 1 : was);
+        snprintf(u->path, sizeof(u->path), "%s", p);
         n++;
     }
     if (d)
         closedir(d);
+    /* patch.pkg can be chosen too when another update is in use */
+    for (int i = 0; i < n; i++)
+        if (!strcmp(out[i].rel, "patch.pkg") && strcmp(out[i].path, active))
+            snprintf(out[i].rel, sizeof(out[i].rel), "version/%.16s", out[i].ver);
+    pidx_t *idx = index_of(root);
+    int found[32], nf = pidx_updates(idx, tid, found, 32);
+    for (int i = 0; i < nf; i++) {
+        const pidx_pkg_t *p = &idx->pkgs[found[i]];
+        update_t *u = NULL;
+        for (int k = 0; k < n && !u; k++)
+            if (!strcmp(out[k].ver, p->ver))
+                u = &out[k];
+        if (u) {
+            /* one line per version: the copy in use when one of them is */
+            if (!strcmp(p->path, active))
+                snprintf(u->path, sizeof(u->path), "%s", p->path);
+            continue;
+        }
+        if (n == max)
+            break;
+        u = &out[n++];
+        memset(u, 0, sizeof(*u));
+        snprintf(u->rel, sizeof(u->rel), "version/%s", p->ver);
+        snprintf(u->ver, sizeof(u->ver), "%s", p->ver);
+        snprintf(u->path, sizeof(u->path), "%s", p->path);
+        const char *base = strrchr(p->path, '/');
+        snprintf(u->name, sizeof(u->name), "%s", base ? base + 1 : p->path);
+    }
     qsort(out, (size_t)n, sizeof(*out), update_cmp);
     return n;
 }
@@ -2917,7 +2947,7 @@ int app_game_json(const char *tid, buf_t *out, char *msg, size_t cap) {
         return -1;
     }
     static update_t ups[32];
-    int nu = list_updates(t.dir, tid, ups, 32);
+    int nu = list_updates(root, t.dir, tid, t.has_patch ? t.patch_path : "", ups, 32);
     buf_printf(out, "{\"title_id\":\"%s\",\"name\":", tid);
     json_str(out, t.name);
     buf_printf(out, ",\"dlc_limit\":%d,\"updates\":[", DLC_LIMIT);
@@ -2928,7 +2958,7 @@ int app_game_json(const char *tid, buf_t *out, char *msg, size_t cap) {
         json_str(out, ups[i].ver);
         buf_printf(out, ",\"name\":");
         json_str(out, ups[i].name);
-        buf_printf(out, ",\"active\":%s}", !strcmp(ups[i].rel, "patch.pkg") && t.has_patch ? "true" : "false");
+        buf_printf(out, ",\"active\":%s}", t.has_patch && !strcmp(ups[i].path, t.patch_path) ? "true" : "false");
     }
     buf_printf(out, "],\"dlcs\":[");
     for (int i = 0; i < t.ndlc_all; i++) {
@@ -2956,8 +2986,10 @@ static char g_upd_tid[10], g_upd_rel[64], g_dlc_tid[10], *g_dlc_on;
 int app_choose_update(const char *tid, const char *rel, char *msg, size_t cap) {
     char root[32];
     const char *name = rel + 9;
-    if (strncmp(rel, "replaced/", 9) || strlen(rel) >= sizeof(g_upd_rel) || strchr(name, '/') || name[0] == '.' ||
-        strlen(name) < 5 || strcasecmp(name + strlen(name) - 4, ".pkg")) {
+    int by_version = !strncmp(rel, "version/", 8) && rel[8] && strlen(rel + 8) <= 7 &&
+                     strspn(rel + 8, "0123456789.") == strlen(rel + 8);
+    if (!by_version && (strncmp(rel, "replaced/", 9) || strlen(rel) >= sizeof(g_upd_rel) || strchr(name, '/') ||
+                        name[0] == '.' || strlen(name) < 5 || strcasecmp(name + strlen(name) - 4, ".pkg"))) {
         snprintf(msg, cap, "invalid update file");
         return -1;
     }
@@ -3039,6 +3071,16 @@ static void apply_update_choice(const char *tid, const char *rel) {
     char was_cur[PATH_MAX], was_new[PATH_MAX];
     if (find_root(tid, root, sizeof(root)) || game_open(tid))
         return;
+    char wanted[64];
+    snprintf(wanted, sizeof(wanted), STATE_DIR "/%s.upd", tid);
+    if (!strncmp(rel, "version/", 8)) {
+        /* nothing on the drive changes: the next scan uses it and adds the game again */
+        write_file(wanted, rel + 8, strlen(rel + 8), 0666);
+        printf("[panel] %s: update %s chosen\n", tid, rel + 8);
+        notify("%s: update changed, adding the game again", tid);
+        return;
+    }
+    unlink(wanted);
     snprintf(game, sizeof(game), "%s/ps4/%s", root, tid);
     snprintf(from, sizeof(from), "%s/%s", game, rel);
     snprintf(cur, sizeof(cur), "%s/patch.pkg", game);
@@ -3215,8 +3257,9 @@ void app_games_json(buf_t *out) {
                        t.has_patch ? "true" : "false",
                        (unsigned long long)(t.app.pkg_size + (t.has_patch ? t.patch.pkg_size : 0)), state, mount);
             json_str(out, t.dir);
+            int usable[32], nu = pidx_updates(index_of(root), tid, usable, 32);
             buf_printf(out, ",\"dlc\":%d,\"dlc_total\":%d,\"updates\":%d,\"update_issue\":", t.ndlc, t.ndlc_all,
-                       t.has_patch + count_aside(t.dir));
+                       (nu > t.has_patch ? nu : t.has_patch) + count_aside(t.dir));
             json_str(out, t.update_issue);
             buf_printf(out, "}");
             first = 0;
