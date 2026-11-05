@@ -49,6 +49,10 @@ echo "== log with times"
 $CC $FLAGS -o "$B/log_test" test/log_test.c src/logts.c -lpthread
 "$B/log_test"
 
+echo "== pkg index"
+$CC $FLAGS -o "$B/pkgindex_test" test/pkgindex_test.c src/pkgindex.c src/pkg.c src/crypto.c
+"$B/pkgindex_test"
+
 echo "== add-on copies"
 $CC $FLAGS -o "$B/accopy_test" test/accopy_test.c src/accopy.c
 "$B/accopy_test"
