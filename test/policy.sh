@@ -34,7 +34,7 @@ grep -nE 'sceSystemServiceKillApp|sceSystemServiceLaunchApp|sceLncUtil' "${OTHER
 
 # The web panel changes state only on POST: every app_* call that changes something sits in
 # a branch that checks for POST.
-awk '/strn?cmp\(path/ {cond=$0} /app_(add|remove|restore|restored_forget|config_set|rescan|stop)\(/ && cond !~ /post/ {print FILENAME":"NR": "$0; bad=1} END {exit bad}' src/web.c ||
+awk '/strn?cmp\(path/ {cond=$0} /app_(add|remove|restore|config_set|rescan|stop)\(/ && cond !~ /post/ {print FILENAME":"NR": "$0; bad=1} END {exit bad}' src/web.c ||
     rule "a state change in the web panel reachable without POST"
 
 # The page for older firmwares must stay without <dialog> and modern JavaScript.

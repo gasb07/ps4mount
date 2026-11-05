@@ -126,8 +126,8 @@ the same network. The panel shows every game found on the connected drives, with
 Buttons:
 
 - **Remove from library**: removes the game from the home screen. The `.pkg` stays on the drive.
-- **Move pkgs back**: removes the game from the library and moves its `.pkg` files back to where they
-  came from (see [Moving pkgs back](#moving-pkgs-back)).
+- **Move pkgs back**: moves the `.pkg` files of the game back to where they came from. The game stays
+  in the library, used from there (see [Moving pkgs back](#moving-pkgs-back)).
 - **Add to library**: adds a removed game back.
 - **Scan for games**: checks the drives now and shows how many games were found on each one.
 - **Settings**: see below.
@@ -147,7 +147,7 @@ Buttons:
 | Install add-ons (DLC) | On | Moves and installs add-on `.pkg` files. When off, add-ons are left where they are. |
 | Copy add-ons to internal storage | On | Add-ons are installed to internal storage by the system. When off, they are used from the drive (at most about 29 per game). Turning it off uninstalls the copies. |
 
-The settings also have **Move all games back** and **Pick up moved-back pkgs again** (see below).
+The settings also have **Move all games back** (see below).
 
 Settings are saved in `/data/ps4mount/config.txt`.
 
@@ -177,9 +177,8 @@ back** in the settings, undoes the move:
 - The files PS4Mount created for the game are removed. Folders are only removed when empty, and no
   `.pkg` is ever deleted.
 
-The `.pkg` files moved back stay where they are on the next scans (they are listed in
-`/data/ps4mount/restored.txt`). To add them again, use **Pick up moved-back pkgs again** in the
-settings. A `.pkg` you move, rename or replace yourself is picked up as usual.
+The next scan adds the game again from the folder its `.pkg` files went back to, when that folder is
+one of the scan folders. To keep a game out of the library, use **Remove from library**.
 
 ## Good to know
 

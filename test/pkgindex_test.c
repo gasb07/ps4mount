@@ -237,14 +237,10 @@ static void test_resolve(void) {
     /* a game used where it is */
     put("my games/Game Four/any name.pkg", "gd CUSA00004 01.00");
     put("my games/Game Four/any update.pkg", "gp CUSA00004 01.03");
-    /* moved back in the panel: not used */
-    put("back/game.pkg", "gd CUSA00005 01.00");
     /* not on the drive as a game */
     put("lone.pkg", "gp CUSA00006 01.00");
     pidx_t idx = {0};
     pidx_scan(&idx, g_root, k_root_only, 1, read_test);
-    for (int i = 0; i < idx.count; i++)
-        idx.pkgs[i].ignored = ends(idx.pkgs[i].path, "back/game.pkg");
     char la[PATH_MAX], lp[PATH_MAX], app[PATH_MAX], patch[PATH_MAX];
 
     legacy(la, lp, sizeof(la), "CUSA00001");
@@ -263,23 +259,18 @@ static void test_resolve(void) {
     CHECK(!pidx_resolve(&idx, NULL, "CUSA00004", la, lp, app, patch, sizeof(app)));
     CHECK(ends(app, "Game Four/any name.pkg") && ends(patch, "Game Four/any update.pkg"));
 
-    legacy(la, lp, sizeof(la), "CUSA00005");
-    CHECK(pidx_resolve(&idx, NULL, "CUSA00005", la, lp, app, patch, sizeof(app)) == -1);
     legacy(la, lp, sizeof(la), "CUSA00006");
     CHECK(pidx_resolve(&idx, NULL, "CUSA00006", la, lp, app, patch, sizeof(app)) == -1);
     legacy(la, lp, sizeof(la), "CUSA00007");
     CHECK(pidx_resolve(&idx, NULL, "CUSA00007", la, lp, app, patch, sizeof(app)) == -1);
     CHECK(!strcmp(app, la) && !strcmp(patch, lp)); /* what the caller gets without a game */
 
-    /* grouping agrees: kept aside and moved back do not count */
+    /* grouping agrees: kept aside does not count */
     pidx_game_t g[8];
-    int n = pidx_group(&idx, g, 8), five = 0;
-    for (int i = 0; i < n; i++) {
-        five |= !strcmp(g[i].title_id, "CUSA00005");
+    int n = pidx_group(&idx, g, 8);
+    for (int i = 0; i < n; i++)
         if (!strcmp(g[i].title_id, "CUSA00002"))
             CHECK(ends(idx.pkgs[g[i].update].path, "CUSA00002/patch.pkg"));
-    }
-    CHECK(!five);
 
     /* an empty index still finds an organized game: the panel can ask before the first scan */
     pidx_t none = {0};

@@ -202,7 +202,7 @@ static int kept_aside(const pidx_t *idx, const char *path) {
 }
 
 int pidx_usable(const pidx_t *idx, const pidx_pkg_t *p) {
-    return p->kind != PIDX_OTHER && !p->incomplete && !p->ignored && !kept_aside(idx, p->path);
+    return p->kind != PIDX_OTHER && !p->incomplete && !kept_aside(idx, p->path);
 }
 
 /* Pkgs come sorted by path: an equal version keeps the first one. */

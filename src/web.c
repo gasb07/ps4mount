@@ -305,9 +305,6 @@ static void web_request(int fd, char *req, size_t size) {
         } else
             rc = app_restore(NULL, msg, sizeof(msg));
         json_msg(fd, !rc, msg);
-    } else if (post && !strcmp(path, "/api/restored/forget")) {
-        int rc = app_restored_forget(msg, sizeof(msg));
-        json_msg(fd, !rc, msg);
     } else if (!strcmp(path, "/api/config") && !post) {
         buf_t b = {0};
         app_config_json(&b);

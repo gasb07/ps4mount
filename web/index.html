@@ -100,7 +100,6 @@ form.settings input.num{width:6em}
     <div class="row" style="justify-content:flex-start;flex-wrap:wrap">
       <button type="button" class="danger" id="s-restore">Move all games back</button>
       <button type="button" id="s-pick">Restore selected games</button>
-      <button type="button" id="s-forget">Pick up moved-back pkgs again</button>
     </div>
   </fieldset>
   <div class="row"><button type="button" id="s-cancel">Cancel</button><button class="primary" type="submit">Save</button></div>
@@ -238,8 +237,8 @@ $('grid').addEventListener('click', function (e) {
   if (a === 'launch') return launch(tid);
   if (a === 'unmount' && !confirm('Remove ' + tid + ' from the library? The pkg stays on the USB drive.')) return;
   if (a === 'restore' && !confirm('Move the pkgs of ' + tid + ' (game, update and all its add-ons) back to where they came from, ' +
-      'with their original names?\n\nThe open game is closed first. The game leaves the library and PS4Mount stops picking ' +
-      'these pkgs up. No pkg is deleted.')) return;
+      'with their original names?\n\nThe open game is closed first. The game is added again from that ' +
+      'folder on the next scan. No pkg is deleted.')) return;
   busy[tid] = 1; render();
   api('/api/' + a + '?title_id=' + tid, 'POST').then(function (j) { toast(j.message); })
     .catch(function (err) { toast('Error: ' + err.message); })
@@ -380,7 +379,7 @@ $('s-restore').onclick = function () {
   if (!size) return;
   if (!confirm('WARNING: this moves the pkgs of ALL ' + games.length + ' games (game, update and all add-ons) back to where ' +
       'they came from, with their original names.\n\nThe open game is closed now, without saving. All PS4Mount games leave ' +
-      'the library, ' + size + ' at a time, and PS4Mount stops picking these pkgs up. No pkg is deleted.\n\nContinue?')) return;
+      'the library, ' + size + ' at a time, and are added again from those folders on the next scan. No pkg is deleted.\n\nContinue?')) return;
   startRestore(size);
 };
 function pickUpdate() {
@@ -417,13 +416,8 @@ $('p-go').onclick = function () {
   if (!tids.length) return;
   if (!confirm('Move the pkgs of ' + tids.length + ' game(s), each with its update and all its add-ons, back to where they ' +
       'came from?\n\nThe open game is closed now, without saving. The games leave the library' +
-      (tids.length > size ? ', ' + size + ' at a time' : '') + '. No pkg is deleted.')) return;
+      (tids.length > size ? ', ' + size + ' at a time' : '') + ' and are added again from those folders on the next scan. No pkg is deleted.')) return;
   startRestore(size, 'title_ids=' + tids.join(','));
-};
-$('s-forget').onclick = function () {
-  if (!confirm('Pick up the pkgs that were moved back again? They are moved into the ps4 folder and added on the next scan.')) return;
-  api('/api/restored/forget', 'POST').then(function (j) { toast(j.message); })
-    .catch(function (err) { toast('Error: ' + err.message); });
 };
 $('setform').onsubmit = function (e) {
   e.preventDefault();

@@ -88,7 +88,6 @@ pre{white-space:pre-wrap;font-size:12px;background:#0b0d11;padding:12px;border-r
     </label>
     <button class="danger" id="s-restore">Move all games back</button>
     <button id="s-pick">Restore selected games</button>
-    <button id="s-forget">Pick up moved-back pkgs again</button>
   </div>
   <button id="s-cancel">Back</button><button class="primary" id="s-save">Save</button>
 </div>
@@ -241,8 +240,8 @@ $('grid').onclick = function (e) {
   if (a === 'dlcs') { openDlcs(tid); return; }
   if (a === 'unmount' && !confirm('Remove ' + tid + ' from the library? The pkg stays on the USB drive.')) return;
   if (a === 'restore' && !confirm('Move the pkgs of ' + tid + ' (game, update and all its add-ons) back to where they came from, ' +
-      'with their original names?\n\nThe open game is closed first. The game leaves the library and PS4Mount stops picking ' +
-      'these pkgs up. No pkg is deleted.')) return;
+      'with their original names?\n\nThe open game is closed first. The game is added again from that ' +
+      'folder on the next scan. No pkg is deleted.')) return;
   busy[tid] = 1;
   render();
   api('/api/' + a + '?title_id=' + tid, 'POST', null, function (err, j) {
@@ -343,12 +342,8 @@ $('s-restore').onclick = function () {
   if (!size) return;
   if (!confirm('WARNING: this moves the pkgs of ALL ' + games.length + ' games (game, update and all add-ons) back to where ' +
       'they came from, with their original names.\n\nThe open game is closed now, without saving. All PS4Mount games leave ' +
-      'the library, ' + size + ' at a time, and PS4Mount stops picking these pkgs up. No pkg is deleted.\n\nContinue?')) return;
+      'the library, ' + size + ' at a time, and are added again from those folders on the next scan. No pkg is deleted.\n\nContinue?')) return;
   startRestore(size, '');
-};
-$('s-forget').onclick = function () {
-  if (!confirm('Pick up the pkgs that were moved back again? They are moved into the ps4 folder and added on the next scan.')) return;
-  api('/api/restored/forget', 'POST', null, function (err, j) { say(err ? 'Error: ' + err : j.message); });
 };
 
 /* --- choosing games to move back --- */
@@ -389,7 +384,7 @@ $('p-go').onclick = function () {
   if (!tids.length) return;
   if (!confirm('Move the pkgs of ' + tids.length + ' game(s), each with its update and all its add-ons, back to where they ' +
       'came from?\n\nThe open game is closed now, without saving. The games leave the library' +
-      (tids.length > size ? ', ' + size + ' at a time' : '') + '. No pkg is deleted.')) return;
+      (tids.length > size ? ', ' + size + ' at a time' : '') + ' and are added again from those folders on the next scan. No pkg is deleted.')) return;
   startRestore(size, 'title_ids=' + tids.join(','));
 };
 

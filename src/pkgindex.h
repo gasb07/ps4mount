@@ -24,7 +24,6 @@ typedef struct {
     uint8_t digest[32];
     int data;    /* add-ons: has content, not only a license */
     int seen;
-    int ignored; /* set by the caller after a scan: left out of the games */
     int claimed; /* set by the caller: an add-on some game uses */
 } pidx_pkg_t;
 

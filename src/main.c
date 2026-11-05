@@ -66,7 +66,6 @@
 
 #define MAX_SCAN_PATHS 64
 #define CONFIG_PATH STATE_DIR "/config.txt"
-#define RESTORED_LIST STATE_DIR "/restored.txt" /* pkgs moved back: not picked up again */
 
 /* Settings, kept in CONFIG_PATH and edited in the panel. */
 typedef struct {
@@ -2237,19 +2236,14 @@ static void clear_removed_dlc(void) {
     closedir(d);
 }
 
-/* Reads the drive into its index. A pkg moved back in the panel stays out of the library. */
+/* Reads the drive into its index. */
 static long index_refresh(const char *root) {
     pidx_t *idx = index_of(root);
-    char lib[PATH_MAX];
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
     pidx_scan(idx, root, (const char (*)[128])g_cfg.paths, g_cfg.npaths, pidx_read_pkg);
-    snprintf(lib, sizeof(lib), "%s/ps4/", root);
-    for (int i = 0; i < idx->count; i++) {
-        pidx_pkg_t *p = &idx->pkgs[i];
-        p->ignored = strncmp(p->path, lib, strlen(lib)) && restored_has(RESTORED_LIST, drive_rel(root, p->path), p->size);
-        p->claimed = 0;
-    }
+    for (int i = 0; i < idx->count; i++)
+        idx->pkgs[i].claimed = 0;
     clock_gettime(CLOCK_MONOTONIC, &t1);
     return (long)(t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000;
 }
@@ -2264,8 +2258,6 @@ static void index_report(const char *root, long ms) {
             other++;
             printf("[index] not usable: %s\n", idx->pkgs[i].path);
         }
-        if (idx->pkgs[i].ignored)
-            printf("[index] skip %s (moved back from ps4/ on request)\n", idx->pkgs[i].path);
         incomplete += idx->pkgs[i].incomplete;
     }
     printf("[index] %s: %d pkg(s), %d title(s), %d not usable, %d incomplete, %d past the limit, %ld ms\n", root, idx->count,
@@ -3415,8 +3407,8 @@ static void clean_name(char *s) {
 }
 
 /* Moves <game_dir>/<rel> to its recorded original path (or fallback, relative to the
- * drive root, for pkgs moved before origins were recorded) and adds it to the list of
- * restored pkgs. 1 moved, 0 nothing there, -1 failed. */
+ * drive root, for pkgs moved before origins were recorded). 1 moved, 0 nothing there,
+ * -1 failed. */
 static int restore_pkg(const char *root, const char *game_dir, const char *rel, const char *fallback) {
     char src[PATH_MAX], orig[PATH_MAX], dst[PATH_MAX], dir[PATH_MAX];
     snprintf(src, sizeof(src), "%s/%s", game_dir, rel);
@@ -3435,7 +3427,6 @@ static int restore_pkg(const char *root, const char *game_dir, const char *rel, 
         printf("[restore] %s: %s\n", src, strerror(errno));
         return -1;
     }
-    restored_add(RESTORED_LIST, drive_rel(root, dst), (uint64_t)st.st_size);
     printf("[restore] %s -> %s\n", src, dst);
     return 1;
 }
@@ -3834,13 +3825,6 @@ int app_restore(const char *tids, char *msg, size_t cap) {
     else
         snprintf(msg, cap, "Closing the open game and moving the pkgs of %d games back, %d at a time", n,
                  g_cfg.restore_batch);
-    return 0;
-}
-
-int app_restored_forget(char *msg, size_t cap) {
-    unlink(RESTORED_LIST);
-    g_next_scan = 0;
-    snprintf(msg, cap, "Pkgs moved back will be picked up again on the next scan");
     return 0;
 }
 
