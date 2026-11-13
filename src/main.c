@@ -2552,7 +2552,10 @@ static int klog_connect(void) {
     if (s >= 0)
         close(s);
     int fd = open("/dev/klog", O_RDONLY);
-    printf("[klog] /dev/klog fd=%d\n", fd);
+    static int was_missing;
+    if (fd >= 0 || !was_missing) /* retried on every pass: say it once until it changes */
+        printf("[klog] /dev/klog fd=%d\n", fd);
+    was_missing = fd < 0;
     return fd;
 }
 
