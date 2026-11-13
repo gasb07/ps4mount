@@ -39,6 +39,7 @@
 #include <ps5/kernel.h>
 
 #include "accopy.h"
+#include "klogdup.h"
 #include "build.h"
 #include "crypto.h"
 #include "db.h"
@@ -2609,18 +2610,33 @@ static void start_delete_window(void) {
 }
 
 /* Copies klog lines about our titles (and crash/mount errors) into the log. */
+/* a kernel line worth keeping, once per KDUP_WINDOW_S: a system loop repeats its lines
+ * many times a second and would fill the log */
+static void trace_write(const char *line) {
+    static kdup_t dup;
+    char note[256];
+    time_t now = time(NULL);
+    while (kdup_flush(&dup, now, note, sizeof(note)))
+        printf("[klog] %s\n", note);
+    int r = kdup_line(&dup, line, now, note, sizeof(note));
+    if (r & KDUP_NOTE)
+        printf("[klog] %s\n", note);
+    if (r & KDUP_WRITE)
+        printf("[klog] %.300s\n", line);
+}
+
 static void trace_klog(const char *line) {
     static const char *keys[] = {"CRASH", "Trophy:Register", "_pfs_mount", "mountpfs", "PrepareProcessLaunch",
                                  "preLaunchCheck", "scePlayGoCore", "process_mount", "process_check", "sqlite",
                                  "SQLITE", "corrupt", "Corrupt", "CORRUPT", "dbr", "DBR", NULL};
     for (int i = 0; keys[i]; i++)
         if (strstr(line, keys[i])) {
-            printf("[klog] %.300s\n", line);
+            trace_write(line);
             return;
         }
     for (int i = 0; i < MAX_TITLES; i++)
         if (g_managed[i].used && strstr(line, g_managed[i].tid) && !strstr(line, "BGLayer") && !strstr(line, "PSM.UI")) {
-            printf("[klog] %.300s\n", line);
+            trace_write(line);
             return;
         }
 }

@@ -56,3 +56,7 @@ $CC $FLAGS -o "$B/pkgindex_test" test/pkgindex_test.c src/pkgindex.c src/pkg.c s
 echo "== add-on copies"
 $CC $FLAGS -o "$B/accopy_test" test/accopy_test.c src/accopy.c
 "$B/accopy_test"
+
+echo "== repeated klog lines"
+$CC $FLAGS -o "$B/klogdup_test" test/klogdup_test.c src/klogdup.c
+"$B/klogdup_test"
