@@ -1176,7 +1176,9 @@ static int ac_job_step(ac_job_t *j, int head, int next_started, time_t now, char
     ac_copy_path(p, sizeof(p), j->cid);
     uint64_t cur = stat(p, &st) ? 0 : (uint64_t)st.st_blocks * 512;
     int r = acwait_step(&j->wait, cur < j->size ? cur : j->size - 1, j->size, now);
-    if (j->copy_end)
+    char dir[PATH_MAX];
+    snprintf(dir, sizeof(dir), "/user/addcont/%.9s/%s", j->cid + 7, j->cid + 20);
+    if (j->copy_end || accopy_files_done(dir, j->size)) /* without klog the files say it */
         return j->called ? 1 : ac_files_written(j, now, why, cap);
     if (next_started)
         return ac_files_written(j, now, why, cap); /* the system moved on: its end line was missed */

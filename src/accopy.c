@@ -3,6 +3,8 @@
 #include "accopy.h"
 
 #include <fcntl.h>
+#include <limits.h>
+#include <sys/stat.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -89,7 +91,8 @@ void acwait_start(acwait_t *w, time_t now) {
 int acwait_step(acwait_t *w, uint64_t cur, uint64_t want, time_t now) {
     if (cur >= want)
         return ACW_DONE;
-    if (cur > w->last) {
+    if (cur > w->last || !cur) {
+        /* nothing written here yet: the system copies elsewhere and moves ac.pkg in at the end */
         w->last = cur;
         w->grew = now;
     }
@@ -112,4 +115,17 @@ int accopy_decide(const acin_t *in) {
     if (!in->files)
         return in->rereg ? AC_REINSTALL : AC_TURN_OFF;
     return in->playgo ? AC_NONE : AC_REINSTALL;
+}
+
+int accopy_files_done(const char *dir, uint64_t size) {
+    char p[PATH_MAX];
+    struct stat st;
+    snprintf(p, sizeof(p), "%s/ac.pkg", dir);
+    if (stat(p, &st) || (uint64_t)st.st_size < size)
+        return 0;
+    snprintf(p, sizeof(p), "%s/ac.json", dir);
+    if (stat(p, &st))
+        return 0;
+    snprintf(p, sizeof(p), "%s/ac.pbm", dir);
+    return !stat(p, &st);
 }

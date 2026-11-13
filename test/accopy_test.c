@@ -5,6 +5,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include "accopy.h"
 
@@ -84,6 +86,45 @@ static void test_progress_timeout(void) {
     CHECK(acwait_step(&w, 5000, 1ULL << 40, 1801) == ACW_TIMEOUT);
 }
 
+/* the system copies elsewhere and moves ac.pkg in at the end: nothing written yet is not a stall */
+static void test_progress_not_here_yet(void) {
+    printf("progress not here yet\n");
+    acwait_t w;
+    acwait_start(&w, 0);
+    CHECK(acwait_step(&w, 0, 100, 0) == ACW_WAIT);
+    CHECK(acwait_step(&w, 0, 100, 600) == ACW_WAIT);
+    CHECK(acwait_step(&w, 5, 100, 602) == ACW_WAIT);
+    CHECK(acwait_step(&w, 5, 100, 723) == ACW_STALL);
+    acwait_start(&w, 0);
+    CHECK(acwait_step(&w, 0, 100, 1801) == ACW_TIMEOUT);
+}
+
+/* the files the system leaves when the copy is over, without klog */
+static void test_files_done(void) {
+    printf("files done\n");
+    char d[96], f[128];
+    snprintf(d, sizeof(d), "%s/LABEL", g_dir);
+    CHECK(!accopy_files_done(d, 4));
+    mkdir(d, 0777);
+    snprintf(f, sizeof(f), "%s/ac.pkg", d);
+    FILE *fp = fopen(f, "w");
+    fputs("abc", fp);
+    fclose(fp);
+    snprintf(f, sizeof(f), "%s/ac.json", d);
+    fclose(fopen(f, "w"));
+    snprintf(f, sizeof(f), "%s/ac.pbm", d);
+    fclose(fopen(f, "w"));
+    CHECK(!accopy_files_done(d, 4)); /* ac.pkg short */
+    snprintf(f, sizeof(f), "%s/ac.pkg", d);
+    fp = fopen(f, "a");
+    fputs("d", fp);
+    fclose(fp);
+    CHECK(accopy_files_done(d, 4));
+    snprintf(f, sizeof(f), "%s/ac.pbm", d);
+    unlink(f);
+    CHECK(!accopy_files_done(d, 4));
+}
+
 static int decide(int on, int store, int marked, int files, int playgo, int fails, int busy) {
     acin_t in = {on, marked, files, store, playgo, fails, busy, 0};
     return accopy_decide(&in);
@@ -133,6 +174,8 @@ int main(void) {
     test_progress_done();
     test_progress_stall();
     test_progress_timeout();
+    test_progress_not_here_yet();
+    test_files_done();
     test_state_store();
     test_state_playgo_lost();
     test_state_table();
