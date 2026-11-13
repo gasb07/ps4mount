@@ -1798,6 +1798,17 @@ static int served_elsewhere(const title_src_t *t) {
     buf[strcspn(buf, "\n")] = 0;
     if (!strcmp(buf, t->dir))
         return 0;
+    /* buf is <root>/ps4/<TID>: the game pkg may be anywhere on that drive, the index knows */
+    if (strlen(buf) > 9 && !strncmp(buf, "/mnt/", 5) && !strncmp(buf + 9, "/ps4/", 5)) {
+        char root[10], legacy_patch[PATH_MAX + 16], patch[PATH_MAX + 16], want[16];
+        snprintf(root, sizeof(root), "%.9s", buf);
+        snprintf(legacy_patch, sizeof(legacy_patch), "%s/patch.pkg", buf);
+        snprintf(pkg, sizeof(pkg), "%s/app.pkg", buf);
+        update_wanted(t->app.title_id, want, sizeof(want));
+        char app[PATH_MAX + 16];
+        if (!pidx_resolve(index_of(root), want, t->app.title_id, pkg, legacy_patch, app, patch, sizeof(app)))
+            return exists(app);
+    }
     snprintf(pkg, sizeof(pkg), "%s/app.pkg", buf);
     return exists(pkg);
 }
