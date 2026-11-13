@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
  * Copyright (C) 2026 gasb07
- * Origin records of moved pkgs and the list of restored pkgs. */
+ * Origin records of moved pkgs. */
 #include "origin.h"
 
 #include <fcntl.h>
@@ -49,29 +49,6 @@ int origin_find(const char *game_dir, const char *rel, char *orig, size_t n) {
     }
     fclose(f);
     return found ? 0 : -1;
-}
-
-int restored_add(const char *list, const char *rel, uint64_t size) {
-    char line[1200];
-    if (strchr(rel, '\t') || strchr(rel, '\n'))
-        return -1;
-    snprintf(line, sizeof(line), "%s\t%llu\n", rel, (unsigned long long)size);
-    return append_line(list, line);
-}
-
-int restored_has(const char *list, const char *rel, uint64_t size) {
-    char line[1200], want[1200];
-    FILE *f = fopen(list, "r");
-    if (!f)
-        return 0;
-    snprintf(want, sizeof(want), "%s\t%llu", rel, (unsigned long long)size);
-    int found = 0;
-    while (!found && fgets(line, sizeof(line), f)) {
-        line[strcspn(line, "\r\n")] = 0;
-        found = !strcmp(line, want);
-    }
-    fclose(f);
-    return found;
 }
 
 int origin_free_path(const char *root, const char *orig, char *out, size_t n) {

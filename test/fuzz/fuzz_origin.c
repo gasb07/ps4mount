@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
  * Copyright (C) 2026 gasb07
- * Fuzz target: origin.txt and the list of pkgs moved back (files on the drive / console). */
+ * Fuzz target: origin.txt (a file on the drive). */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,7 +25,5 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     fclose(f);
     origin_find(dir, "app.pkg", out, sizeof(out));
     origin_find(dir, "addcont/CUSA00001/LABEL/ac.pkg", out, sizeof(out));
-    restored_has(path, "game.pkg", 1234);
-    restored_has(path, "", 0);
     return 0;
 }

@@ -32,7 +32,6 @@ int app_stop_open(char *name, size_t cap) {
     return 1;
 }
 int app_restore(const char *tids, char *msg, size_t cap) { return record("restore", tids, msg, cap); }
-int app_restored_forget(char *msg, size_t cap) { return record("forget", NULL, msg, cap); }
 void app_config_json(buf_t *out) { buf_printf(out, "{\"batch\":true}"); }
 int app_config_set(const char *body, char *msg, size_t cap) { return record("config", body, msg, cap); }
 int app_icon(const char *tid, buf_t *out) {

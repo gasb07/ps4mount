@@ -33,6 +33,9 @@ typedef struct {
 } acwait_t;
 void acwait_start(acwait_t *w, time_t now);
 int acwait_step(acwait_t *w, uint64_t cur, uint64_t want, time_t now);
+/* The copy is over without klog: dir (/user/addcont/<TID>/<LABEL>) holds ac.pkg at full
+ * size, ac.json and ac.pbm. */
+int accopy_files_done(const char *dir, uint64_t size);
 
 /* What is known of one add-on. files: /user/addcont/<TID>/<LABEL>/ac.pkg exists. store:
  * files there that PS4Mount did not install. playgo: /user/playgo/addcont/<CID> exists.

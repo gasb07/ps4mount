@@ -104,7 +104,7 @@ int main(void) {
 
     printf("state changes need POST\n");
     const char *changing[] = {"/api/mount?title_id=CUSA00001", "/api/unmount?title_id=CUSA00001", "/api/rescan",
-                              "/api/restore", "/api/restored/forget", "/api/stop", NULL};
+                              "/api/restore", "/api/stop", NULL};
     for (int i = 0; changing[i]; i++) {
         char req[256];
         snprintf(req, sizeof(req), "GET %s HTTP/1.1\r\n\r\n", changing[i]);
@@ -160,8 +160,6 @@ int main(void) {
     CHECK(!strcmp(g_stub_call, "config") && !strcmp(g_stub_arg, "batch=1&restore_batch=5"));
     r = ask("GET /api/config HTTP/1.1\r\n\r\n");
     CHECK(status(r, "200") && strstr(r, "\"batch\""));
-    post("/api/restored/forget", "");
-    CHECK(!strcmp(g_stub_call, "forget"));
 
     printf("updates, add-ons and starting a game\n");
     r = ask("GET /api/game?title_id=CUSA00791 HTTP/1.1\r\n\r\n");

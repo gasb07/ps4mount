@@ -68,9 +68,9 @@ The web panel, opened from the **Media** tab:
   add games if the firmware lacks that function. The startup notification and the log say which one
   is used.
 - An ELF loader listening on port **9021** to send the payload.
-- Access to the kernel log: either **klogsrv** running on port 3232, or no other payload reading
-  `/dev/klog`. PS4Mount reads the system log to know when a game starts and when a delete is
-  confirmed. Without it, games cannot start (see [How it works](#how-it-works)).
+- Optional: access to the kernel log, either **klogsrv** running on port 3232 or no other payload
+  reading `/dev/klog`. PS4Mount uses the system log to notice sooner when a game starts and when a
+  delete is confirmed. Without it, games still start and can be deleted.
 - A USB drive formatted as **exFAT**.
 - PS4 **fake** PKGs (game, and optionally its update and add-ons). Retail PKGs are not supported.
 - Avoid game PKGs with patches, add-ons (DLC) or updates merged into them: they may not work. Use the
@@ -126,8 +126,8 @@ the same network. The panel shows every game found on the connected drives, with
 Buttons:
 
 - **Remove from library**: removes the game from the home screen. The `.pkg` stays on the drive.
-- **Move pkgs back**: removes the game from the library and moves its `.pkg` files back to where they
-  came from (see [Moving pkgs back](#moving-pkgs-back)).
+- **Move pkgs back**: moves the `.pkg` files of the game back to where they came from. The game stays
+  in the library, used from there (see [Moving pkgs back](#moving-pkgs-back)).
 - **Add to library**: adds a removed game back.
 - **Scan for games**: checks the drives now and shows how many games were found on each one.
 - **Settings**: see below.
@@ -147,7 +147,7 @@ Buttons:
 | Install add-ons (DLC) | On | Moves and installs add-on `.pkg` files. When off, add-ons are left where they are. |
 | Copy add-ons to internal storage | On | Add-ons are installed to internal storage by the system. When off, they are used from the drive (at most about 29 per game). Turning it off uninstalls the copies. |
 
-The settings also have **Move all games back** and **Pick up moved-back pkgs again** (see below).
+The settings also have **Move all games back** (see below).
 
 Settings are saved in `/data/ps4mount/config.txt`.
 
@@ -177,9 +177,8 @@ back** in the settings, undoes the move:
 - The files PS4Mount created for the game are removed. Folders are only removed when empty, and no
   `.pkg` is ever deleted.
 
-The `.pkg` files moved back stay where they are on the next scans (they are listed in
-`/data/ps4mount/restored.txt`). To add them again, use **Pick up moved-back pkgs again** in the
-settings. A `.pkg` you move, rename or replace yourself is picked up as usual.
+The next scan adds the game again from the folder its `.pkg` files went back to, when that folder is
+one of the scan folders. To keep a game out of the library, use **Remove from library**.
 
 ## Good to know
 
@@ -195,6 +194,10 @@ settings. A `.pkg` you move, rename or replace yourself is picked up as usual.
   of the game pkg (for example 01.00). The game runs with the update; the web panel shows its version.
 - Games already installed the normal way on the console are never touched, and their add-ons on the
   drive are not installed.
+- **The same game on two drives:** the drive that added it first keeps serving it, even when the other
+  drive has a newer version or an update. The panel shows the other copy as **On another drive**. To use
+  the other copy, remove the game's pkgs from the first drive. On a single drive, the highest version
+  is used.
 - **Do not use rest mode while PS4Mount is running** (see the warning at the top). Rest mode can corrupt
   the system software, and a game left open also locks up after waking up because the drive was powered off.
 - **Games with more than about 29 add-ons:** while a game runs, the console mounts each of its packages (the game,
