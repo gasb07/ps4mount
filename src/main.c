@@ -3891,7 +3891,7 @@ static int clean_scan_path(const char *in, char *out, size_t n, char *why, size_
             return -1;
         }
     if (!strncasecmp(out, "ps4", 3) && (!out[3] || out[3] == '/')) {
-        snprintf(why, wn, "the ps4 folder holds the games PS4Mount already moved; choose another folder");
+        snprintf(why, wn, "the ps4 folder is always searched; it does not need to be listed");
         return -1;
     }
     return 0;
