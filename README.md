@@ -68,9 +68,9 @@ The web panel, opened from the **Media** tab:
   add games if the firmware lacks that function. The startup notification and the log say which one
   is used.
 - An ELF loader listening on port **9021** to send the payload.
-- Access to the kernel log: either **klogsrv** running on port 3232, or no other payload reading
-  `/dev/klog`. PS4Mount reads the system log to know when a game starts and when a delete is
-  confirmed. Without it, games cannot start (see [How it works](#how-it-works)).
+- Optional: access to the kernel log, either **klogsrv** running on port 3232 or no other payload
+  reading `/dev/klog`. PS4Mount uses the system log to notice sooner when a game starts and when a
+  delete is confirmed. Without it, games still start and can be deleted.
 - A USB drive formatted as **exFAT**.
 - PS4 **fake** PKGs (game, and optionally its update and add-ons). Retail PKGs are not supported.
 - Avoid game PKGs with patches, add-ons (DLC) or updates merged into them: they may not work. Use the
