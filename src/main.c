@@ -3280,7 +3280,13 @@ void app_games_json(buf_t *out) {
             buf_printf(out, ",\"has_patch\":%s,\"size\":%llu,\"state\":\"%s\",\"mount\":\"%s\",\"source\":",
                        t.has_patch ? "true" : "false",
                        (unsigned long long)(t.app.pkg_size + (t.has_patch ? t.patch.pkg_size : 0)), state, mount);
-            json_str(out, t.dir);
+            /* the folder the game pkg is read from, not the game's state folder */
+            char where[PATH_MAX + 16];
+            snprintf(where, sizeof(where), "%s", t.app_path[0] ? t.app_path : t.dir);
+            char *slash = t.app_path[0] ? strrchr(where, '/') : NULL;
+            if (slash && slash != where)
+                *slash = 0;
+            json_str(out, where);
             int usable[32], nu = pidx_updates(index_of(root), tid, usable, 32);
             buf_printf(out, ",\"dlc\":%d,\"dlc_total\":%d,\"updates\":%d,\"update_issue\":", t.ndlc, t.ndlc_all,
                        (nu > t.has_patch ? nu : t.has_patch) + count_aside(t.dir));
