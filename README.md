@@ -194,6 +194,10 @@ one of the scan folders. To keep a game out of the library, use **Remove from li
   of the game pkg (for example 01.00). The game runs with the update; the web panel shows its version.
 - Games already installed the normal way on the console are never touched, and their add-ons on the
   drive are not installed.
+- **The same game on two drives:** the drive that added it first keeps serving it, even when the other
+  drive has a newer version or an update. The panel shows the other copy as **On another drive**. To use
+  the other copy, remove the game's pkgs from the first drive. On a single drive, the highest version
+  is used.
 - **Do not use rest mode while PS4Mount is running** (see the warning at the top). Rest mode can corrupt
   the system software, and a game left open also locks up after waking up because the drive was powered off.
 - **Games with more than about 29 add-ons:** while a game runs, the console mounts each of its packages (the game,
