@@ -54,6 +54,8 @@
 #define VERSION "PS4Mount 0.8.0"
 #define LOCK_PORT 9032
 #define SCAN_SECONDS 10
+#define REST_POLL_MS 100
+#define REST_LOGIN_DELAY_MS 15000
 #define STATE_DIR "/data/ps4mount"
 /* Internal folders mounted over /user/app/<TID> and /user/patch/<TID>: the files an
  * install leaves there plus app.pkg/patch.pkg as symlinks to the pkgs on the drive.
@@ -86,6 +88,9 @@ static config_t g_cfg = {1, 5, 1, 1, {""}, 1, 5};
 typedef struct { char useless[45]; char message[3075]; } notify_request_t;
 int sceUserServiceInitialize(void *);
 int sceUserServiceGetForegroundUser(int *user);
+int sceUserServiceGetLoginUserIdList(int32_t users[4]);
+int sceKernelOpenEventFlag(intptr_t *flag, const char *name);
+int sceKernelPollEventFlag(intptr_t flag, uint64_t pattern, unsigned mode, uint64_t *bits);
 int sceSystemServiceLaunchApp(const char *title_id, const char **argv, void *param);
 int sceAppInstUtilInitialize(void);
 int sceAppInstUtilAppInstallAll(void *);
@@ -1383,6 +1388,7 @@ typedef struct {
 } managed_t;
 
 static managed_t g_managed[MAX_TITLES];
+static int g_rest_pending;
 static int g_manual_scan; /* "Scan for games" in the panel */
 static int g_deleting; /* a delete screen is open: game folders are unmounted */
 static time_t g_deleting_since;
@@ -1834,6 +1840,7 @@ static int title_state(title_src_t *t) {
 }
 
 static void pump_events(int ms);
+static void poll_rest(void);
 
 /* The launch check compares /system_data/priv/appmeta/<TID>/param.sfo with the
  * update's param.sfo byte for byte; AppInstallAll writes the game's one there. */
@@ -1946,7 +1953,7 @@ static int install_all_start(char (*tids)[10], int n) {
  *   2. one sceAppInstUtilAppInstallAll, then wait until ShellCore has the rows;
  *   3. register_finish: checks the title is registered, writes the marker. */
 static int register_prepare(title_src_t *t) {
-    if (place_files(t) || mount_title(t))
+    if (g_rest_pending || place_files(t) || mount_title(t))
         return -1;
     manage(t);
     return 0;
@@ -1968,7 +1975,7 @@ static time_t db_mtime(void) {
 /* Waits until the system databases were not written for quiet seconds (max limit). */
 static void wait_db_quiet(int quiet, int limit) {
     time_t start = time(NULL), last = db_mtime(), changed = time(NULL);
-    while (time(NULL) - changed < quiet && time(NULL) - start < limit) {
+    while (!g_rest_pending && time(NULL) - changed < quiet && time(NULL) - start < limit) {
         pump_events(1000);
         time_t m = db_mtime();
         if (m != last) {
@@ -2012,15 +2019,18 @@ static void unmask_user_app(char (*tids)[10], int n) {
     char target[64];
     for (int i = 0; i < n; i++) {
         snprintf(target, sizeof(target), "/user/app/%s", tids[i]);
-        if (user_app_masked() && mounted_from(target, NULL, 0) && unmount(target, 0) && unmount(target, MNT_FORCE))
+        if (!g_rest_pending && user_app_masked() && mounted_from(target, NULL, 0) && unmount(target, 0) &&
+            unmount(target, MNT_FORCE))
             printf("[reg] unmount %s: %s\n", target, strerror(errno));
     }
     /* the system keeps the folder open for a moment after AppInstallAll returned */
-    for (int i = 0; i < 12 && user_app_masked(); i++) {
+    for (int i = 0; i < 12 && !g_rest_pending && user_app_masked(); i++) {
         if (!unmount("/user/app", 0))
             break;
         pump_events(250);
     }
+    if (g_rest_pending)
+        return; /* rest cleanup owns the stage from here */
     if (user_app_masked() && unmount("/user/app", MNT_FORCE))
         printf("[reg] unmount /user/app: %s\n", strerror(errno));
     if (user_app_masked())
@@ -2093,8 +2103,10 @@ static void install_all(char (*tids)[10], int n) {
         masked = 0;
     }
     int done = n - need, idle = 0;
-    while (done < n && idle < 30) {
+    while (!g_rest_pending && done < n && idle < 30) {
         pump_events(1000);
+        if (g_rest_pending)
+            break;
         int now = 0;
         for (int i = 0; i < n; i++)
             now += db_is_registered(tids[i]);
@@ -2107,9 +2119,9 @@ static void install_all(char (*tids)[10], int n) {
     }
     /* the rows can be there before AppInstallAll returns: the other games stay hidden
      * until it does (at most two minutes) */
-    for (int i = 0; masked && g_install_busy && i < 120; i++)
+    for (int i = 0; masked && !g_rest_pending && g_install_busy && i < 120; i++)
         pump_events(1000);
-    if (masked)
+    if (masked && !g_rest_pending)
         unmask_user_app(tids, n);
     printf("[reg] %s=%s0x%08x: %d of %d title(s) registered\n", reg_mode_name(), g_install_busy ? "(still running) " : "",
            g_install_rc, done, n);
@@ -2344,6 +2356,9 @@ static void scan_root(const char *root, int fresh, int reconnected) {
     static int over_told; /* games past the limit in the last notification */
     int count = 0, pending = 0, over = 0, found = title_list(root, tids, MAX_TITLES, &over);
     for (int i = 0; i < found; i++) {
+        poll_rest();
+        if (g_rest_pending)
+            return;
         title_src_t src;
         if (src_open(&src, root, tids[i]))
             continue;
@@ -2390,6 +2405,9 @@ static void scan_root(const char *root, int fresh, int reconnected) {
         notify("%s: %d new or updated PS4 game(s)", label, pending);
     /* games already in the library: keep them mounted */
     for (int i = 0; i < count; i++) {
+        poll_rest();
+        if (g_rest_pending)
+            return;
         title_t *t = &titles[i];
         title_src_t src;
         if (t->state != 0 || src_open(&src, root, t->tid))
@@ -2435,6 +2453,8 @@ static void scan_root(const char *root, int fresh, int reconnected) {
             break;
         if (group++)
             wait_db_quiet(BATCH_QUIET, 120);
+        if (g_rest_pending)
+            break;
         if (grouped) {
             buf_t names = {0};
             for (int k = 0; k < n; k++)
@@ -2445,6 +2465,9 @@ static void scan_root(const char *root, int fresh, int reconnected) {
         }
         int np = 0;
         for (int k = 0; k < n; k++) {
+            poll_rest();
+            if (g_rest_pending)
+                break;
             title_t *t = &titles[members[k]];
             title_src_t src;
             prepared[k] = 0;
@@ -2465,9 +2488,13 @@ static void scan_root(const char *root, int fresh, int reconnected) {
             if (src.app.fd > 0)
                 src_close(&src);
         }
+        if (g_rest_pending)
+            break;
         install_all(ids, np);
         /* own rows only after ShellCore stopped writing to its databases */
         wait_db_quiet(3, 30);
+        if (g_rest_pending)
+            break;
         for (int k = 0; k < n; k++) {
             title_t *t = &titles[members[k]];
             title_src_t src;
@@ -2498,9 +2525,8 @@ static void scan_root(const char *root, int fresh, int reconnected) {
 }
 
 /* Releases mounts over /user/app/<TID> of older versions, which mounted the drive
- * folder itself, once that folder is gone. The internal folders mounted now stay
- * while the drive is away (rest mode powers drives off): their pkg links simply
- * point to nothing until the drive is back. */
+ * folder itself, once that folder is gone. Unplugging a drive while awake leaves
+ * the current internal folders in place until it comes back. */
 static void release_stale(void) {
     DIR *d = opendir(STATE_DIR);
     if (!d)
@@ -2542,6 +2568,9 @@ static void scan_all(void) {
         int present = is_mountpoint(root);
         if (present)
             scan_root(root, !seen[i] || g_manual_scan, !seen[i] && !first);
+        poll_rest();
+        if (g_rest_pending)
+            return;
         seen[i] = present;
     }
     ac_submit(); /* the add-ons of every game, in one batch */
@@ -3373,8 +3402,10 @@ static int uninstall_title(const char *tid) {
         return g_uninstall_rc;
     }
     pthread_detach(th);
-    for (int i = 0; i < UNINSTALL_WAIT * 10 && g_uninstall_busy; i++)
+    for (int i = 0; i < UNINSTALL_WAIT * 10 && g_uninstall_busy; i++) {
+        poll_rest();
         usleep(100000);
+    }
     if (g_uninstall_busy) {
         printf("[remove] %s: uninstall did not return within %d s\n", tid, UNINSTALL_WAIT);
         return -2;
@@ -3428,11 +3459,15 @@ static void readd_title(const char *tid) {
     if (g_nreadd_done < MAX_TITLES)
         snprintf(g_readd_done[g_nreadd_done++], 10, "%s", tid);
     pump_events(5000); /* let the system finish the refused launch */
+    if (g_rest_pending)
+        return;
     notify("%s did not start (system file disagree): adding it to the library again", name);
     int rc = app_remove(tid, msg, sizeof(msg));
     printf("[reg] %s: removed to add it again: %s\n", tid, msg);
     if (!rc)
         wait_db_quiet(3, 30);
+    if (g_rest_pending)
+        return;
     app_add(tid, msg, sizeof(msg));
 }
 
@@ -3612,16 +3647,24 @@ int sceSystemServiceKillApp(uint32_t app_id, int how, int reason, int core_dump)
 
 /* Open games: processes named eboot.bin (PS4 and PS5 games alike). Fills up to max
  * app ids and title ids, returns how many are open. */
-static int open_games(uint32_t *ids, char (*tids)[10], int max) {
+static int rest_owned_mount(const char *target, const char *from);
+
+static int rest_owns_game(const char *tid) {
+    char target[64], from[PATH_MAX];
+    snprintf(target, sizeof(target), "/user/app/%.9s", tid);
+    return mounted_from(target, from, sizeof(from)) && rest_owned_mount(target, from);
+}
+
+static int find_open_games(uint32_t *ids, char (*tids)[10], int max, int mounted_only) {
     int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PROC, 0}, n = 0;
     size_t len = 0;
     if (sysctl(mib, 4, NULL, &len, NULL, 0) || !len)
-        return 0;
+        return -1;
     len += len / 4; /* processes started meanwhile */
     uint8_t *buf = malloc(len);
     if (!buf || sysctl(mib, 4, buf, &len, NULL, 0)) {
         free(buf);
-        return 0;
+        return -1;
     }
     for (size_t off = 0; off + sizeof(struct kinfo_proc) <= len;) {
         struct kinfo_proc *ki = (struct kinfo_proc *)(buf + off);
@@ -3629,7 +3672,8 @@ static int open_games(uint32_t *ids, char (*tids)[10], int max) {
             break;
         app_info_t info;
         memset(&info, 0, sizeof(info));
-        if (!strcmp(ki->ki_comm, "eboot.bin") && !sceKernelGetAppInfo(ki->ki_pid, &info) && info.app_id) {
+        if (!strcmp(ki->ki_comm, "eboot.bin") && !sceKernelGetAppInfo(ki->ki_pid, &info) && info.app_id &&
+            (!mounted_only || rest_owns_game(info.title_id))) {
             if (n < max) {
                 ids[n] = info.app_id;
                 snprintf(tids[n], 10, "%.9s", info.title_id);
@@ -3640,6 +3684,11 @@ static int open_games(uint32_t *ids, char (*tids)[10], int max) {
     }
     free(buf);
     return n;
+}
+
+static int open_games(uint32_t *ids, char (*tids)[10], int max) {
+    int n = find_open_games(ids, tids, max, 0);
+    return n < 0 ? 0 : n;
 }
 
 /* Every pkg operation that takes games out of the library closes the open game first,
@@ -3662,6 +3711,8 @@ static int close_open_games(const char *why) {
     memcpy(closing, tids, sizeof(closing[0]) * (size_t)nc);
     for (int s = 0; s < 30; s++) {
         pump_events(1000);
+        if (g_rest_pending)
+            return -1;
         int mounted = 0;
         for (int i = 0; i < nc; i++)
             mounted |= title_running(closing[i]);
@@ -3675,8 +3726,12 @@ static int close_open_games(const char *why) {
                 if (!left)
                     break;
                 pump_events(1000);
+                if (g_rest_pending)
+                    return -1;
             }
-            pump_events(2000); /* let the system finish unmounting the game */
+            pump_events(2000);
+            if (g_rest_pending)
+                return -1; /* let the system finish unmounting the game */
             for (int i = 0; i < MAX_TITLES; i++)
                 g_managed[i].running = 0;
             return 0;
@@ -3778,11 +3833,11 @@ static void run_restore(char (*only)[10], int nonly) {
         notify("Moving the pkgs of %s back...", items[0].name);
     else
         notify("Moving the pkgs of %d game(s) back to where they came from, %d at a time...", n, size);
-    for (int i = 0; i < n; i += size) {
+    for (int i = 0; i < n && !g_rest_pending; i += size) {
         if (i)
             wait_db_quiet(BATCH_QUIET, 120);
         int end = i + size < n ? i + size : n;
-        for (int k = i; k < end; k++) {
+        for (int k = i; k < end && !g_rest_pending; k++) {
             if (items[k].other) {
                 /* the scan moves the game over to the other copy, registered as it is */
                 char game[PATH_MAX], dtids[MAX_DLC_TIDS][10];
@@ -3805,7 +3860,8 @@ static void run_restore(char (*only)[10], int nonly) {
     }
     /* the uninstall events arrive late and mark the games as removed: clear that, so a
      * game added again later is not taken for one removed on the console */
-    pump_events(3000);
+    if (!g_rest_pending)
+        pump_events(3000);
     for (int i = 0; i < n; i++)
         if (!items[i].other)
             restore_clear_state(items[i].tid);
@@ -4126,6 +4182,146 @@ static int still_listening(int s) {
 static int g_klog = -1, g_web = -1;
 static int g_live; /* klogsrv replays its backlog first: live after the first quiet 100 ms */
 
+static intptr_t g_power_flag = -1;
+static uint64_t g_rest_poll_at, g_rest_started, g_rest_retry_at, g_login_since;
+static int g_rest_clean, g_rest_user = -1, g_rest_ready;
+static unsigned g_rest_power;
+static uint32_t g_rest_close_requested[8];
+static int g_rest_nrequested;
+
+static uint64_t monotonic_ms(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (uint64_t)now.tv_sec * 1000 + (uint64_t)now.tv_nsec / 1000000;
+}
+
+static int signed_in_foreground(void) {
+    int user = -1;
+    int32_t users[4] = {-1, -1, -1, -1};
+    if (sceUserServiceGetForegroundUser(&user) || user <= 0 || sceUserServiceGetLoginUserIdList(users))
+        return -1;
+    for (int i = 0; i < 4; i++)
+        if (users[i] == user)
+            return user;
+    return -1;
+}
+
+static int rest_owned_mount(const char *target, const char *from) {
+    if (!strncmp(from, HOLD_DIR "/", sizeof(HOLD_DIR)))
+        return 1;
+    /* Older versions mounted the USB folder directly over /user/app/<TID>. */
+    static const char app[] = "/user/app/";
+    if (strlen(target) != sizeof(app) - 1 + 9 || strncmp(target, app, sizeof(app) - 1) ||
+        strncmp(from, "/mnt/", 5))
+        return 0;
+    char marker[64];
+    snprintf(marker, sizeof(marker), STATE_DIR "/%.9s.src", target + sizeof(app) - 1);
+    return exists(marker);
+}
+
+/* Retry failed close requests. A confirmed absence of game processes permits forced unmount. */
+static int rest_games_closed(void) {
+    uint32_t ids[8];
+    char tids[8][10];
+    int count = find_open_games(ids, tids, 8, 1);
+    if (count < 0 || count > 8)
+        return 0;
+    for (int i = 0; i < count; i++) {
+        int j = 0;
+        while (j < g_rest_nrequested && g_rest_close_requested[j] != ids[i])
+            j++;
+        if (j < g_rest_nrequested)
+            continue;
+        int rc = sceSystemServiceKillApp(ids[i], -1, 0, 0);
+        printf("[rest] close %s (app 0x%08x): 0x%08x\n", tids[i], ids[i], rc);
+        if (!rc && g_rest_nrequested < 8)
+            g_rest_close_requested[g_rest_nrequested++] = ids[i];
+    }
+    return count == 0;
+}
+
+static int rest_release_mounts(void) {
+    int n = getfsstat(NULL, 0, MNT_NOWAIT);
+    if (n <= 0)
+        return -1;
+    int capacity = n + 16;
+    struct statfs *mounts = malloc(sizeof(*mounts) * (size_t)capacity);
+    if (!mounts)
+        return -1;
+    n = getfsstat(mounts, (long)(sizeof(*mounts) * (size_t)capacity), MNT_NOWAIT);
+    int busy = 0, external_before = 0;
+    if (n < 0 || n >= capacity) {
+        free(mounts);
+        return -1;
+    }
+    /* Unwind newest mounts first, including any registration stage over /user/app. */
+    for (int i = n - 1; i >= 0; i--) {
+        const struct statfs *m = &mounts[i];
+        if (!strncmp(m->f_mntonname, "/mnt/usb", 8) || !strncmp(m->f_mntonname, "/mnt/ext", 8))
+            external_before++;
+        if (strcmp(m->f_fstypename, "nullfs") || !rest_owned_mount(m->f_mntonname, m->f_mntfromname))
+            continue;
+        char from[PATH_MAX];
+        if (!mounted_from(m->f_mntonname, from, sizeof(from)) ||
+            strcmp(from, m->f_mntfromname) || unmount(m->f_mntonname, MNT_FORCE))
+            busy++;
+    }
+    free(mounts);
+    printf("[rest] external mount entries at start of release pass: %d\n", external_before);
+    if (g_masked && !user_app_masked())
+        g_masked = 0;
+    return busy;
+}
+
+static void poll_rest(void) {
+    uint64_t now = monotonic_ms();
+    if (now < g_rest_poll_at)
+        return;
+    g_rest_poll_at = now + REST_POLL_MS;
+    if (g_power_flag < 0)
+        (void)sceKernelOpenEventFlag(&g_power_flag, "SceSystemStateMgrInfo");
+    uint64_t bits = 0;
+    unsigned state = g_power_flag >= 0 &&
+                     !sceKernelPollEventFlag(g_power_flag, UINT64_MAX, 2, &bits) ? (unsigned)(bits & 65535) : 0;
+    unsigned previous = g_rest_power;
+    g_rest_power = state;
+    if (state == 300 || state == 500) {
+        if (!g_rest_pending || previous == 1000 || g_rest_user > 0) {
+            g_rest_pending = 1;
+            g_rest_ready = g_rest_clean = 0;
+            g_rest_started = now;
+            g_rest_retry_at = now;
+            g_rest_user = -1;
+            g_rest_nrequested = 0;
+            printf("[rest] state=%u at %llu ms; closing games before forced unmount\n", state, (unsigned long long)now);
+        }
+        g_rest_ready = 0;
+        if (!g_rest_clean && now >= g_rest_retry_at) {
+            g_rest_retry_at = now + 250;
+            if (!rest_games_closed())
+                return;
+            int busy = rest_release_mounts();
+            printf("[rest] release result=%d at +%llu ms\n", busy,
+                   (unsigned long long)(monotonic_ms() - g_rest_started));
+            g_rest_clean = busy == 0;
+        }
+        return;
+    }
+    if (!g_rest_pending)
+        return;
+    if (state == 1000 && previous != 1000)
+        printf("[rest] system working at %llu ms, pre-rest release complete=%d\n",
+               (unsigned long long)now, g_rest_clean);
+    int user = state == 1000 ? signed_in_foreground() : -1;
+    if (user != g_rest_user) {
+        g_rest_user = user;
+        g_login_since = now;
+        if (user > 0)
+            printf("[rest] foreground user signed in; waiting 15 seconds\n");
+    }
+    g_rest_ready = user > 0 && now - g_login_since >= REST_LOGIN_DELAY_MS;
+}
+
 /* Serves the panel and handles klog lines for up to ms milliseconds. */
 static void pump_events(int ms) {
     static char buf[16384], line[4096];
@@ -4134,17 +4330,22 @@ static void pump_events(int ms) {
     clock_gettime(CLOCK_MONOTONIC, &end);
     end.tv_sec += ms / 1000;
     end.tv_nsec += (long)(ms % 1000) * 1000000;
+    int was_resting = g_rest_pending;
     for (;;) {
+        poll_rest();
+        if (g_rest_pending && !was_resting)
+            return;
         if (g_klog < 0) {
             g_klog = klog_connect();
             g_live = 0;
+            ll = 0;
         }
         struct timespec now;
         clock_gettime(CLOCK_MONOTONIC, &now);
         long left = (end.tv_sec - now.tv_sec) * 1000 + (end.tv_nsec - now.tv_nsec) / 1000000;
         if (left <= 0)
             return;
-        long wait = g_live || g_klog < 0 ? left : (left < 100 ? left : 100);
+        long wait = left < REST_POLL_MS ? left : REST_POLL_MS;
         struct timeval tv = {wait / 1000, (wait % 1000) * 1000};
         fd_set fs;
         FD_ZERO(&fs);
@@ -4159,8 +4360,8 @@ static void pump_events(int ms) {
                 maxfd = g_web;
         }
         if (maxfd < 0) {
-            usleep((useconds_t)left * 1000);
-            return;
+            usleep((useconds_t)wait * 1000);
+            continue;
         }
         int ready = select(maxfd + 1, &fs, NULL, NULL, &tv);
         if (ready == 0 && !g_live && g_klog >= 0) {
@@ -4169,6 +4370,9 @@ static void pump_events(int ms) {
         }
         if (ready <= 0)
             continue;
+        poll_rest();
+        if (g_rest_pending && !was_resting)
+            return;
         if (g_web >= 0 && FD_ISSET(g_web, &fs))
             web_serve(g_web);
         if (g_klog < 0 || !FD_ISSET(g_klog, &fs))
@@ -4187,7 +4391,7 @@ static void pump_events(int ms) {
             }
             line[ll] = 0;
             ll = 0;
-            if (g_live)
+            if (g_live && !g_rest_pending)
                 handle_klog_line(line);
         }
     }
@@ -4247,6 +4451,25 @@ int main(void) {
                g_fw_text);
     unlink(STATE_DIR "/stop");
     for (;;) {
+        poll_rest();
+        if (g_rest_pending) {
+            if (!g_rest_ready) {
+                pump_events(250);
+                continue;
+            }
+            g_rest_pending = 0;
+            if (user_app_masked())
+                unmask_leftover();
+            g_deleting = 0;
+            g_deleting_close_at = 0;
+            g_next_scan = 0;
+            g_manual_scan = 1;
+            if (g_klog >= 0) {
+                close(g_klog);
+                g_klog = -1;
+            }
+            printf("[rest] login delay complete; resuming game scan\n");
+        }
         if (g_stop || exists(STATE_DIR "/stop")) {
             char msg[192];
             unlink(STATE_DIR "/stop");
@@ -4319,8 +4542,10 @@ int main(void) {
             g_next_scan = time(NULL) + (g_scan_again ? 0 : SCAN_SECONDS);
             g_scan_again = 0;
         }
-        ac_poll();
-        ac_tasks(g_deleting);
+        if (!g_rest_pending) {
+            ac_poll();
+            ac_tasks(g_deleting);
+        }
         pump_events(1000);
     }
 }

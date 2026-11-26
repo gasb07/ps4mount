@@ -21,6 +21,20 @@
 > 1. Go to **Settings > System > Power Saving > Set Time Until PS5 Enters Rest Mode**.
 > 2. Set both **During Media Playback** and **While Playing Games** to **Don't Put in Rest Mode**.
 
+### Experimental rest detection
+
+This build observes the PS5's own rest transition. When the system reports standby,
+PS4Mount force-unmounts the game, update and add-on folders as soon as no PS4Mount
+game process is running. If a game is running, PS4Mount first closes it and confirms
+that the process has exited. Closing a game can discard unsaved progress.
+After wake, the foreground user must remain signed in for 15 seconds before the
+regular drive scan resumes.
+
+The `[rest]` log records the power transition, external mount entries visible at the
+start of each release pass, and elapsed time with the number of game mounts still busy.
+The time between the power event and the system unmounting external storage still
+needs to be measured on hardware. Keep using **Stop (before rest mode)** outside testing.
+
 Play PS4 fake PKGs on a jailbroken PS5 straight from a USB drive, without installing them.
 
 Put the game (and its update) `.pkg` files on a USB drive, plug it in and load `ps4mount.elf`.
